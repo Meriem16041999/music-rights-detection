@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+audio_excerpts/
+audio_excerpts copy/
+*.pyc
+.DS_Store

@@ -1,0 +1,4 @@
+audio_refs/*.mov filter=lfs diff=lfs merge=lfs -text
+audio_refs/*.mp4 filter=lfs diff=lfs merge=lfs -text
+audio_refs/*.wav filter=lfs diff=lfs merge=lfs -text
+audio_refs/*.mp3 filter=lfs diff=lfs merge=lfs -text
