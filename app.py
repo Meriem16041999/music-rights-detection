@@ -24,10 +24,11 @@ from sacem_agent import SacemAgent
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
-
+from conductor_order import apply_conductor_order
+from ai_realign import ai_realign_with_conductor
 
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=True)
-
+load_dotenv()
 ACR_HOST = (os.getenv("ACR_HOST") or "").strip()
 ACR_ACCESS_KEY = (os.getenv("ACR_ACCESS_KEY") or "").strip()
 ACR_ACCESS_SECRET = (os.getenv("ACR_ACCESS_SECRET") or "").strip()
@@ -239,6 +240,77 @@ def tc_to_seconds(tc: str) -> int:
         pass
     return 0
 
+def apply_timing_and_shift_following(df, changed_idx, new_time_in, new_time_out):
+    out = df.copy()
+
+    start = tc_to_seconds(new_time_in)
+    end = tc_to_seconds(new_time_out)
+
+    if end <= start:
+        end = start + 1
+
+    out.at[changed_idx, "start_sec"] = start
+    out.at[changed_idx, "end_sec"] = end
+    out.at[changed_idx, "TIME IN"] = sec_to_timecode(start)
+    out.at[changed_idx, "TIME OUT"] = sec_to_timecode(end)
+    out.at[changed_idx, "DUREE"] = sec_to_timecode(end - start)
+
+    idxs = list(out.index)
+    pos = idxs.index(changed_idx)
+    cursor = end
+
+    for next_idx in idxs[pos + 1:]:
+        old_start = int(out.at[next_idx, "start_sec"])
+        old_end = int(out.at[next_idx, "end_sec"])
+        duration = max(1, old_end - old_start)
+
+        out.at[next_idx, "start_sec"] = cursor
+        out.at[next_idx, "end_sec"] = cursor + duration
+        out.at[next_idx, "TIME IN"] = sec_to_timecode(cursor)
+        out.at[next_idx, "TIME OUT"] = sec_to_timecode(cursor + duration)
+        out.at[next_idx, "DUREE"] = sec_to_timecode(duration)
+
+        cursor += duration
+
+    return out
+
+def recompute_following_timings(df: pd.DataFrame, changed_idx, new_time_in: str, new_time_out: str) -> pd.DataFrame:
+    out = df.copy()
+
+    if changed_idx not in out.index:
+        return out
+
+    start = tc_to_seconds(new_time_in)
+    end = tc_to_seconds(new_time_out)
+
+    if end <= start:
+        end = start + 1
+
+    out.at[changed_idx, "start_sec"] = start
+    out.at[changed_idx, "end_sec"] = end
+    out.at[changed_idx, "TIME IN"] = sec_to_timecode(start)
+    out.at[changed_idx, "TIME OUT"] = sec_to_timecode(end)
+    out.at[changed_idx, "DUREE"] = sec_to_timecode(end - start)
+
+    idx_list = list(out.index)
+    pos = idx_list.index(changed_idx)
+
+    cursor = end
+
+    for idx in idx_list[pos + 1:]:
+        old_start = int(out.at[idx, "start_sec"])
+        old_end = int(out.at[idx, "end_sec"])
+        duration = max(1, old_end - old_start)
+
+        out.at[idx, "start_sec"] = cursor
+        out.at[idx, "end_sec"] = cursor + duration
+        out.at[idx, "TIME IN"] = sec_to_timecode(cursor)
+        out.at[idx, "TIME OUT"] = sec_to_timecode(cursor + duration)
+        out.at[idx, "DUREE"] = sec_to_timecode(duration)
+
+        cursor = cursor + duration
+
+    return out
 
 def find_audio_ref_file(acr_title: str, hit: Optional[Dict[str, str]] = None) -> str:
     base_dir = Path(__file__).parent / "audio_refs"
@@ -796,24 +868,30 @@ def safe_parquet_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
     text_cols = [
-    "ACR SCORE",
-    "MATCH SCORE",
-    "isrc",
-    "audio_ref",
-    "audio_excerpt",
-    "SACEM STATUT",
-    "SACEM TITLE",
-    "SACEM SCORE",
-    "AUTEUR(S) SACEM",
-    "COMPOSITEUR(S) SACEM",
-    "EDITEUR(S) SACEM",
-    "SOUS-EDITEUR(S) SACEM",
-    "INTERPRETE(S) SACEM",
-    "URL SACEM",
-    "URL RECHERCHE SACEM",
-    "ISWC",
-]
-
+        "ACR SCORE",
+        "MATCH SCORE",
+        "isrc",
+        "audio_ref",
+        "audio_excerpt",
+        "SACEM STATUT",
+        "SACEM TITLE",
+        "SACEM SCORE",
+        "AUTEUR(S) SACEM",
+        "COMPOSITEUR(S) SACEM",
+        "EDITEUR(S) SACEM",
+        "SOUS-EDITEUR(S) SACEM",
+        "INTERPRETE(S) SACEM",
+        "URL SACEM",
+        "URL RECHERCHE SACEM",
+        "ISWC",
+        "DURÉE HIST MIN",
+        "DURÉE HIST MAX",
+        "DURÉE HIST AVG",
+        "DURÉE HIST MEDIAN",
+        "ACR TITLE ORIGINAL",
+        "CONDUCTEUR TITLE",
+        "CONDUCTEUR WARNING",
+    ]
     for col in text_cols:
         if col in out.columns:
             out[col] = out[col].fillna("").astype(str)
@@ -857,6 +935,39 @@ def make_audio_excerpt(video_path: str, start_sec: int, duration_sec: int, out_d
 
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return str(out_path)
+def apply_timing_and_shift_following(df, changed_idx, new_time_in, new_time_out):
+    out = df.copy()
+
+    start = tc_to_seconds(new_time_in)
+    end = tc_to_seconds(new_time_out)
+
+    if end <= start:
+        end = start + 1
+
+    out.at[changed_idx, "start_sec"] = start
+    out.at[changed_idx, "end_sec"] = end
+    out.at[changed_idx, "TIME IN"] = sec_to_timecode(start)
+    out.at[changed_idx, "TIME OUT"] = sec_to_timecode(end)
+    out.at[changed_idx, "DUREE"] = sec_to_timecode(end - start)
+
+    idxs = list(out.index)
+    pos = idxs.index(changed_idx)
+    cursor = end
+
+    for next_idx in idxs[pos + 1:]:
+        old_start = int(out.at[next_idx, "start_sec"])
+        old_end = int(out.at[next_idx, "end_sec"])
+        duration = max(1, old_end - old_start)
+
+        out.at[next_idx, "start_sec"] = cursor
+        out.at[next_idx, "end_sec"] = cursor + duration
+        out.at[next_idx, "TIME IN"] = sec_to_timecode(cursor)
+        out.at[next_idx, "TIME OUT"] = sec_to_timecode(cursor + duration)
+        out.at[next_idx, "DUREE"] = sec_to_timecode(duration)
+
+        cursor += duration
+
+    return out
 
 # ============================================================
 # SIDEBAR
@@ -1033,10 +1144,24 @@ with tab3:
 
         paths = temp_uploaded_paths
 
+st.markdown("## Conducteur MDP")
+st.session_state["use_ai_realign"] = st.checkbox(
+    "Utiliser l'IA pour réaligner avec le conducteur",
+    value=False,
+)
+use_conductor_order = st.checkbox(
+    "Utiliser le conducteur pour corriger l’ordre des titres",
+    value=True,
+)
 
-# ============================================================
-# ANALYSE
-# ============================================================
+conductor_type = st.selectbox(
+    "Type de conducteur",
+    ["Lundi-Jeudi", "Vendredi"],
+)
+ 
+
+ 
+
 if st.button("Analyser les vidéos", type="primary"):
     for k in ["results_df", "video_detected_df", "video_selection_df"]:
         st.session_state.pop(k, None)
@@ -1233,10 +1358,29 @@ if st.button("Analyser les vidéos", type="primary"):
             chunk_seconds=int(chunk_seconds),
             gap_tolerance_sec=int(gap_tolerance),
         )
+        if use_conductor_order:
+            df_occ = apply_conductor_order(df_occ, conductor_type)
 
-        video_paths_by_part = {f"P{i+1}": p for i, p in enumerate(paths)}
+            for idx, row in df_occ.iterrows():
+                 title = str(row.get("TITRE", "")).strip()
+
+                 hit, _, _ = fuzzy_match_mapping(
+                    title,
+                    mapping_index,
+                    threshold=70,
+                )
+
+                 df_occ.at[idx, "audio_ref"] = find_audio_ref_file(title, hit)
+            if st.session_state.get("use_ai_realign", False):
+                df_occ = ai_realign_with_conductor(df_occ, conductor_type)
+
+                video_paths_by_part = {f"P{i+1}": p for i, p in enumerate(paths)}
 
         with st.spinner("Préparation des extraits audio détectés..."):
+            video_paths_by_part = {
+    f"P{i+1}": p
+    for i, p in enumerate(paths)
+}
             df_occ = prepare_audio_excerpts(df_occ, video_paths_by_part)
 
         st.session_state["video_detected_df"] = df_occ
@@ -1323,6 +1467,7 @@ if "video_detected_df" in st.session_state:
             source_title = str(row.get("SOURCE TITLE", "")).strip()
             audio_ref = str(row.get("audio_ref", "")).strip()
             isrc = str(row.get("isrc", "")).strip()
+        
 
             with st.expander(f"{time_in} — {titre}", expanded=False):
                 edit_cols = st.columns(4)
@@ -1349,6 +1494,17 @@ if "video_detected_df" in st.session_state:
                     value=duree,
                     key=f"edit_duree_{idx}",
                 )
+                if st.button("Appliquer et décaler la suite", key=f"apply_shift_{idx}"):
+                    updated = apply_timing_and_shift_following(
+                        st.session_state["video_selection_df"],
+                        idx,
+                        new_time_in,
+                        new_time_out,
+                    )
+
+                    st.session_state["video_selection_df"] = updated
+                    st.session_state["video_detected_df"] = updated.copy()
+                    st.rerun()
 
                 delete_row = edit_cols[3].checkbox(
                     "Supprimer",
@@ -1360,11 +1516,13 @@ if "video_detected_df" in st.session_state:
                 new_duration_sec = max(1, tc_to_seconds(new_duree))
                 new_end_sec = new_start_sec + new_duration_sec
 
-                edited.at[idx, "TIME IN"] = new_time_in
-                edited.at[idx, "TIME OUT"] = new_time_out
-                edited.at[idx, "DUREE"] = new_duree
-                edited.at[idx, "start_sec"] = new_start_sec
-                edited.at[idx, "end_sec"] = new_end_sec
+                edited = recompute_following_timings(
+                    edited,
+                    idx,
+                    new_time_in,
+                    new_time_out,
+                )
+
                 edited.at[idx, "garder"] = not delete_row
 
                 st.caption(f"Détection ACR : {source_title} / durée {new_duree}")
@@ -1441,8 +1599,9 @@ if "video_detected_df" in st.session_state:
                            
                    
 
-                        st.session_state["video_selection_df"] = edited
-
+                      
+        st.session_state["video_selection_df"] = edited
+        st.session_state["video_detected_df"] = edited.copy()
     if st.button("Construire le tableau final", type="primary"):
         selection_df = st.session_state.get("video_selection_df", pd.DataFrame()).copy()
 

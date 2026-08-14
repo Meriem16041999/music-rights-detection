@@ -1,6 +1,38 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
 .venv/
+venv/
 __pycache__/
-audio_excerpts/
-audio_excerpts copy/
 *.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Bases locales
+*.sqlite3
+*.db
+
+# Cache / jobs
+cache/
+tmp/
+temp/
+
+# Vidéos / audio
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.wav
+*.mp3
+*.m4a
+
+# macOS
 .DS_Store
+
+# Logs
+*.log.env
