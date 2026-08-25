@@ -36,3 +36,8 @@ temp/
 
 # Logs
 *.log.env
+
+build/
+dist/
+frontend/dist/
+*.spec

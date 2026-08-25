@@ -1,32 +1,55 @@
+import os
 import re
 import unicodedata
+
 from rapidfuzz import fuzz
 from playwright.sync_api import sync_playwright
-
+# ============================================================
+# NORMALISATION
+# ============================================================
 
 def normalize_key(s: str) -> str:
     s = "" if s is None else str(s)
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("ascii", "ignore").decode("ascii")
+
     s = s.upper()
+
     s = re.sub(r"[^A-Z0-9 ]+", " ", s)
+
     return re.sub(r"\s+", " ", s).strip()
 
 
 def clean_list(items):
     out = []
+
     for x in items:
         x = re.sub(r"\s+", " ", str(x)).strip()
+
         if not x:
             continue
+
         if "INCONNU" in x.upper():
             continue
+
         if x not in out:
             out.append(x)
+
     return out
 
 
+# ============================================================
+# PARSING DE LA PAGE DETAIL SACEM
+# ============================================================
+
 def parse_sacem_detail(text: str) -> dict:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
 
     title = ""
     authors = []
@@ -36,34 +59,81 @@ def parse_sacem_detail(text: str) -> dict:
     performers = []
     iswc = ""
 
+    # --------------------------------------------------------
+    # TITRE
+    # --------------------------------------------------------
+
     if "Retour aux résultats" in lines:
         idx = lines.index("Retour aux résultats")
+
         if idx + 1 < len(lines):
             title = lines[idx + 1]
 
+    # --------------------------------------------------------
+    # AUTEURS / COMPOSITEURS / EDITEURS
+    # --------------------------------------------------------
+
     for line in lines:
+
         if "Code ISWC" in line:
-            iswc = line.replace("Code ISWC :", "").replace("Code ISWC:", "").strip()
+            iswc = (
+                line
+                .replace("Code ISWC :", "")
+                .replace("Code ISWC:", "")
+                .strip()
+            )
 
         if ", Compositeur-Auteur" in line:
-            name = line.replace(", Compositeur-Auteur", "").strip()
+
+            name = (
+                line
+                .replace(", Compositeur-Auteur", "")
+                .strip()
+            )
+
             authors.append(name)
             composers.append(name)
 
         elif ", Compositeur" in line:
-            composers.append(line.replace(", Compositeur", "").strip())
+
+            composers.append(
+                line
+                .replace(", Compositeur", "")
+                .strip()
+            )
 
         elif ", Auteur" in line:
-            authors.append(line.replace(", Auteur", "").strip())
+
+            authors.append(
+                line
+                .replace(", Auteur", "")
+                .strip()
+            )
 
         elif ", Editeur" in line:
-            publishers.append(line.replace(", Editeur", "").strip())
+
+            publishers.append(
+                line
+                .replace(", Editeur", "")
+                .strip()
+            )
 
         elif ", Sous Editeur" in line:
-            sub_publishers.append(line.replace(", Sous Editeur", "").strip())
+
+            sub_publishers.append(
+                line
+                .replace(", Sous Editeur", "")
+                .strip()
+            )
+
+    # --------------------------------------------------------
+    # INTERPRETE
+    # --------------------------------------------------------
 
     if "INTERPRÈTE" in lines:
+
         idx = lines.index("INTERPRÈTE")
+
         if idx + 1 < len(lines):
             performers.append(lines[idx + 1])
 
@@ -79,11 +149,21 @@ def parse_sacem_detail(text: str) -> dict:
     }
 
 
+# ============================================================
+# AGENT SACEM
+# ============================================================
+
 class SacemAgent:
+
     def __init__(self, headless=True):
         self.headless = headless
 
+    # ========================================================
+    # DETECTION BLOCAGE CLOUDFRONT
+    # ========================================================
+
     def _is_blocked(self, body_text: str) -> bool:
+
         text = str(body_text or "").lower()
 
         return (
@@ -93,7 +173,12 @@ class SacemAgent:
             or "the request could not be satisfied" in text
         )
 
+    # ========================================================
+    # OUVERTURE SACEM
+    # ========================================================
+
     def _open_home_and_accept_cookies(self, page) -> str:
+
         page.goto(
             "https://repertoire.sacem.fr/",
             wait_until="domcontentloaded",
@@ -108,14 +193,20 @@ class SacemAgent:
             return body_text
 
         try:
+
             page.get_by_text(
                 "Accepter les cookies",
                 exact=False,
             ).click(timeout=2500)
+
         except Exception:
             pass
 
         return page.locator("body").inner_text()
+
+    # ========================================================
+    # RECHERCHE
+    # ========================================================
 
     def _run_search(
         self,
@@ -123,6 +214,7 @@ class SacemAgent:
         title: str,
         artist: str = "",
     ) -> str:
+
         body_text = self._open_home_and_accept_cookies(page)
 
         print("SACEM URL:", page.url)
@@ -136,8 +228,14 @@ class SacemAgent:
         if inputs.count() < 2:
             return body_text
 
-        print("TITLE =", title)
+        print("")
+        print("==============================")
+        print("SACEM SEARCH")
+        print("==============================")
+        print("TITLE  =", title)
         print("ARTIST =", artist)
+        print("==============================")
+        print("")
 
         inputs.nth(0).fill(title)
         inputs.nth(1).fill(artist or "")
@@ -150,27 +248,122 @@ class SacemAgent:
         search_button.click()
 
         try:
+
             page.wait_for_url(
                 "**/resultats**",
                 timeout=15000,
             )
+
         except Exception:
             pass
 
-        page.wait_for_timeout(2500)
+        # On laisse le temps aux résultats de se charger
+        try:
+            page.wait_for_load_state(
+                "domcontentloaded",
+                timeout=5000,
+            )
+        except Exception:
+            pass
+
+        # attendre les résultats plutôt qu'un simple délai fixe
+        try:
+
+            page.locator(
+                "a:has-text('VOIR LE DÉTAIL'), "
+                "button:has-text('VOIR LE DÉTAIL'), "
+                "[role='button']:has-text('VOIR LE DÉTAIL')"
+            ).first.wait_for(
+                state="visible",
+                timeout=8000,
+            )
+
+        except Exception:
+            pass
+
+        page.wait_for_timeout(1000)
 
         return page.locator("body").inner_text()
 
-    def _has_results(self, body_text: str) -> bool:
-        text = str(body_text or "").lower()
+    # ========================================================
+    # RECUPERATION DES BOUTONS "VOIR LE DETAIL"
+    # ========================================================
 
-        return (
-            "œuvre correspondante" in text
-            or "oeuvre correspondante" in text
-            or "voir le détail" in text
+    def _get_detail_links(self, page):
+
+        links = page.locator(
+            "a:has-text('VOIR LE DÉTAIL'), "
+            "button:has-text('VOIR LE DÉTAIL'), "
+            "[role='button']:has-text('VOIR LE DÉTAIL')"
         )
 
-    def _extract_candidate_title(self, block_text: str) -> str:
+        if links.count() == 0:
+
+            links = page.get_by_text(
+                "VOIR LE DÉTAIL",
+                exact=False,
+            )
+
+        return links
+
+    # ========================================================
+    # DETECTION DES RESULTATS
+    #
+    # MODIFICATION IMPORTANTE :
+    # on regarde directement si les boutons existent.
+    #
+    # Cela évite de relancer inutilement la recherche.
+    # ========================================================
+
+    def _has_results(
+        self,
+        body_text: str,
+        page=None,
+    ) -> bool:
+
+        # --------------------------------------------
+        # Méthode la plus fiable : DOM
+        # --------------------------------------------
+
+        if page is not None:
+
+            try:
+
+                detail_links = self._get_detail_links(page)
+
+                if detail_links.count() > 0:
+
+                    print(
+                        "SACEM RESULTS DETECTED:",
+                        detail_links.count(),
+                    )
+
+                    return True
+
+            except Exception:
+                pass
+
+        # --------------------------------------------
+        # Fallback texte
+        # --------------------------------------------
+
+        text = normalize_key(body_text)
+
+        return (
+            "OEUVRE CORRESPONDANTE" in text
+            or "OEUVRES CORRESPONDANTES" in text
+            or "VOIR LE DETAIL" in text
+        )
+
+    # ========================================================
+    # EXTRAIRE LE TITRE D'UN RESULTAT
+    # ========================================================
+
+    def _extract_candidate_title(
+        self,
+        block_text: str,
+    ) -> str:
+
         lines = [
             line.strip()
             for line in str(block_text or "").splitlines()
@@ -178,124 +371,279 @@ class SacemAgent:
         ]
 
         ignored = {
-            "VOIR LE DÉTAIL",
             "VOIR LE DETAIL",
-            "ŒUVRE",
             "OEUVRE",
         }
 
         for line in lines:
-            if normalize_key(line) not in ignored:
-                return line
+
+            normalized = normalize_key(line)
+
+            if normalized in ignored:
+                continue
+
+            # Ignorer certaines lignes parasites éventuelles
+            if normalized.startswith("VOIR LE DETAIL"):
+                continue
+
+            return line
 
         return lines[0] if lines else ""
 
+    # ========================================================
+    # RECUPERER LE BLOC CORRESPONDANT A UN BOUTON
+    # ========================================================
+
+    def _get_result_block(self, link):
+
+        return link.locator(
+            "xpath=ancestor::*"
+            "[self::div or self::article or self::li]"
+            "[.//*[contains("
+            "translate("
+            "normalize-space(.), "
+            "'ÉÈÊËÀÂÄÎÏÔÖÙÛÜÇ', "
+            "'EEEEAAAII OOUUUC'"
+            "), "
+            "'VOIR LE D'"
+            ")]]"
+            "[1]"
+        )
+
+    # ========================================================
+    # CHOIX DU RESULTAT
+    #
+    # ORDRE :
+    #
+    # 1. TITRE EXACT
+    # 2. TITRE EXACT + artiste si plusieurs titres identiques
+    # 3. FUZZY MATCH
+    #
+    # ========================================================
     def _choose_result_index_from_page(
-        self,
-        page,
-        title: str,
-        artist: str = "",
-    ) -> int:
+    self,
+    page,
+    title: str,
+    artist: str = "",
+) -> int:
+
         wanted_title = normalize_key(title)
         wanted_artist = normalize_key(artist)
 
-        detail_links = self._get_detail_links(page)
+        detail_links = page.get_by_text(
+            "VOIR LE DÉTAIL",
+            exact=True,
+        )
 
         count = detail_links.count()
-        print("SACEM RESULT COUNT:", count)
 
-        best_index = 0
-        best_score = -1
+        if count == 0:
+            return 0
+
+        candidates = []
 
         for index in range(count):
-            link = detail_links.nth(index)
-
-            block = link.locator(
-                "xpath=ancestor::*"
-                "[self::div or self::article or self::li]"
-                "[.//*[contains("
-                "normalize-space(.), "
-                "'VOIR LE DÉTAIL'"
-                ")]][1]"
-            )
-
             try:
-                block_text = block.inner_text(timeout=3000)
-            except Exception:
-                block_text = ""
+                link = detail_links.nth(index)
 
-            result_title_raw = self._extract_candidate_title(
-                block_text
-            )
-
-            result_title = normalize_key(result_title_raw)
-            block_key = normalize_key(block_text)
-
-            if not result_title:
-                continue
-
-            title_score = fuzz.ratio(
-                wanted_title,
-                result_title,
-            )
-
-            artist_score = 0
-
-            if wanted_artist:
-                artist_score = fuzz.partial_ratio(
-                    wanted_artist,
-                    block_key,
+                # On remonte au bloc résultat associé au bouton
+                card = link.locator(
+                    "xpath=ancestor::div["
+                    ".//a[contains(., 'VOIR LE DÉTAIL')]"
+                    "][1]"
                 )
 
-            if result_title == wanted_title:
-                score = 100000 + artist_score
-            else:
-                score = title_score * 100 + artist_score
+                text = card.inner_text(
+                    timeout=3000
+                )
+
+                lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if line.strip()
+                ]
+
+                if not lines:
+                    continue
+
+                # Généralement le premier texte utile est le titre
+                candidate_title = lines[0]
+
+                normalized_candidate = normalize_key(
+                    candidate_title
+                )
+
+                # --------------------------------
+                # SCORE TITRE
+                # --------------------------------
+                if normalized_candidate == wanted_title:
+                    exact_title = True
+                    title_score = 10000
+                else:
+                    exact_title = False
+                    title_score = fuzz.ratio(
+                        wanted_title,
+                        normalized_candidate,
+                    )
+
+                # --------------------------------
+                # SCORE ARTISTE / TEXTE
+                # --------------------------------
+                artist_score = 0
+
+                normalized_card_text = normalize_key(
+                    text
+                )
+
+                if wanted_artist:
+                    if wanted_artist in normalized_card_text:
+                        artist_score = 500
+
+                total_score = (
+                    title_score
+                    + artist_score
+                )
+
+                candidate = {
+                    "index": index,
+                    "title": candidate_title,
+                    "exact_title": exact_title,
+                    "title_score": title_score,
+                    "artist_score": artist_score,
+                    "total_score": total_score,
+                }
+
+                candidates.append(candidate)
+
+                print(
+                    "SACEM CANDIDATE:",
+                    candidate,
+                )
+
+            except Exception as exc:
+                print(
+                    "SACEM CANDIDATE ERROR:",
+                    index,
+                    repr(exc),
+                )
+
+        if not candidates:
+            return 0
+
+        # 1. Priorité absolue aux titres exacts
+        exact_matches = [
+            candidate
+            for candidate in candidates
+            if candidate["exact_title"]
+        ]
+
+        if exact_matches:
+            exact_matches.sort(
+                key=lambda item: (
+                    item["artist_score"],
+                    item["total_score"],
+                ),
+                reverse=True,
+            )
+
+            winner = exact_matches[0]
 
             print(
-                "SACEM CANDIDATE:",
-                index,
-                "TITLE:",
-                result_title_raw,
-                "TITLE SCORE:",
-                title_score,
-                "ARTIST SCORE:",
-                artist_score,
-                "TOTAL:",
-                score,
+                "SACEM SELECTED EXACT:",
+                winner,
             )
 
-            if score > best_score:
-                best_score = score
-                best_index = index
+            return winner["index"]
 
-        # Important : en dehors de la boucle.
-        return best_index
-    def _get_detail_links(self, page):
-        links = page.locator(
-        "a:has-text('VOIR LE DÉTAIL'), "
-        "button:has-text('VOIR LE DÉTAIL'), "
-        "[role='button']:has-text('VOIR LE DÉTAIL')"
-    )
+        # 2. Sinon meilleur fuzzy match
+        candidates.sort(
+            key=lambda item: item[
+                "total_score"
+            ],
+            reverse=True,
+        )
 
-        if links.count() == 0:
-            links = page.get_by_text(
-                "VOIR LE DÉTAIL",
-                exact=False,
-            )
+        winner = candidates[0]
 
-        return links
+        print(
+            "SACEM SELECTED FUZZY:",
+            winner,
+        )
+
+        return winner["index"]
+            
     def search(
         self,
         title: str,
         artist: str = "",
     ) -> dict:
+
         title = str(title or "").strip()
         artist = str(artist or "").strip()
 
         with sync_playwright() as playwright:
+
+            # =================================================
+            # NAVIGATEUR
+            #
+            # Dans la version PyInstaller, on utilise Chrome
+            # installé sur le Mac au lieu du Chromium interne
+            # de Playwright.
+            # =================================================
+
+            CHROME_PATHS = [
+                (
+                    "/Applications/Google Chrome.app/"
+                    "Contents/MacOS/Google Chrome"
+                ),
+                (
+                    "/Applications/Chromium.app/"
+                    "Contents/MacOS/Chromium"
+                ),
+                "/opt/homebrew/bin/chromium",
+                "/usr/local/bin/chromium",
+            ]
+
+            chrome_executable = next(
+                (
+                    path
+                    for path in CHROME_PATHS
+                    if os.path.exists(path)
+                ),
+                None,
+            )
+
+            if not chrome_executable:
+
+                print(
+                    "SACEM BROWSER MISSING"
+                )
+
+                return {
+                    "status": "browser_missing",
+                    "title": "",
+                    "iswc": "",
+                    "authors": [],
+                    "composers": [],
+                    "publishers": [],
+                    "sub_publishers": [],
+                    "performers": [],
+                    "title_input": title,
+                    "artist_input": artist,
+                    "search_mode": "",
+                    "url": "",
+                    "candidate_url": "",
+                    "search_url": "",
+                }
+
+            print(
+                "SACEM USING CHROME:",
+                chrome_executable,
+            )
+
             browser = playwright.chromium.launch(
-             headless=False,
+                headless=self.headless,
+                executable_path=chrome_executable,
             )
 
             page = browser.new_page(
@@ -307,13 +655,24 @@ class SacemAgent:
             )
 
             try:
+
+                # =================================================
+                # PREMIERE RECHERCHE :
+                # TITRE + ARTISTE
+                # =================================================
+
                 body_text = self._run_search(
                     page,
                     title,
                     artist,
                 )
 
+                # -------------------------------------------------
+                # Blocage SACEM / CloudFront
+                # -------------------------------------------------
+
                 if self._is_blocked(body_text):
+
                     return {
                         "status": "blocked",
                         "title": "",
@@ -327,23 +686,61 @@ class SacemAgent:
                         "artist_input": artist,
                         "search_mode": "title_artist",
                         "url": page.url,
+                        "candidate_url": "",
+                        "search_url": page.url,
                         "raw_text": body_text[:2000],
                     }
 
                 search_mode = "title_artist"
                 search_url = page.url
 
-                if not self._has_results(body_text):
+                # =================================================
+                # VERIFIER SI LA RECHERCHE A DES RESULTATS
+                # =================================================
+
+                has_results = self._has_results(
+                    body_text,
+                    page,
+                )
+
+                print(
+                    "SACEM HAS RESULTS:",
+                    has_results,
+                )
+
+                # =================================================
+                # FALLBACK :
+                # si aucun résultat titre + artiste,
+                # refaire avec le titre uniquement.
+                # =================================================
+
+                if not has_results:
+
+                    print("")
+                    print(
+                        "NO RESULT WITH ARTIST"
+                    )
+                    print(
+                        "TRYING TITLE-ONLY FALLBACK"
+                    )
+                    print("")
+
                     body_text = self._run_search(
                         page,
                         title,
                         "",
                     )
 
-                    search_mode = "title_only_fallback"
+                    search_mode = (
+                        "title_only_fallback"
+                    )
+
                     search_url = page.url
 
-                    if self._is_blocked(body_text):
+                    if self._is_blocked(
+                        body_text
+                    ):
+
                         return {
                             "status": "blocked",
                             "title": "",
@@ -357,14 +754,36 @@ class SacemAgent:
                             "artist_input": artist,
                             "search_mode": search_mode,
                             "url": page.url,
-                            "raw_text": body_text[:2000],
+                            "candidate_url": "",
+                            "search_url": page.url,
+                            "raw_text": (
+                                body_text[:2000]
+                            ),
                         }
 
-                detail_links = self._get_detail_links(page)
+                # =================================================
+                # RECUPERATION DES RESULTATS
+                # =================================================
+
+                detail_links = (
+                    self._get_detail_links(
+                        page
+                    )
+                )
 
                 count = detail_links.count()
 
+                print(
+                    "FINAL SACEM RESULT COUNT:",
+                    count,
+                )
+
+                # =================================================
+                # AUCUN RESULTAT
+                # =================================================
+
                 if count == 0:
+
                     return {
                         "status": "not_found",
                         "title": "",
@@ -378,40 +797,81 @@ class SacemAgent:
                         "artist_input": artist,
                         "search_mode": search_mode,
                         "url": "",
+                        "candidate_url": "",
                         "search_url": search_url,
                         "raw_text": body_text[:2000],
                     }
 
+                # =================================================
+                # SELECTION DU MEILLEUR RESULTAT
+                # =================================================
+
                 selected_index = (
-                    self._choose_result_index_from_page(
+                    self
+                    ._choose_result_index_from_page(
                         page,
                         title,
-                        artist
-                        if search_mode == "title_artist"
-                        else "",
+                        (
+                            artist
+                            if search_mode
+                            == "title_artist"
+                            else ""
+                        ),
                     )
                 )
 
+                # Sécurité
                 if selected_index >= count:
                     selected_index = 0
+
+                if selected_index < 0:
+                    selected_index = 0
+
+                print("")
+                print(
+                    "CLICKING SACEM RESULT INDEX:",
+                    selected_index,
+                )
+                print("")
+
+                # =================================================
+                # CLIC SUR "VOIR LE DETAIL"
+                # =================================================
 
                 detail_links.nth(
                     selected_index
                 ).click()
 
                 try:
+
                     page.wait_for_url(
                         "**/detail-oeuvre/**",
                         timeout=10000,
                     )
+
                 except Exception:
                     pass
 
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(
+                    1500
+                )
 
                 current_url = page.url
 
-                if "/detail-oeuvre/" not in current_url:
+                print(
+                    "SACEM DETAIL URL:",
+                    current_url,
+                )
+
+                # =================================================
+                # VERIFIER QUE NOUS SOMMES SUR UNE FICHE
+                # =================================================
+
+                if (
+                    "/detail-oeuvre/"
+                    not in current_url
+                ):
+
                     return {
                         "status": "not_found",
                         "title": "",
@@ -425,6 +885,7 @@ class SacemAgent:
                         "artist_input": artist,
                         "search_mode": search_mode,
                         "url": "",
+                        "candidate_url": "",
                         "result_count": count,
                         "selected_result_index": (
                             selected_index
@@ -432,59 +893,187 @@ class SacemAgent:
                         "search_url": search_url,
                     }
 
-                current_title = page.title()
+                # =================================================
+                # EXTRACTION DE LA FICHE SACEM
+                # =================================================
 
-                detail_text = page.locator(
-                    "body"
-                ).inner_text()
+                current_title = (
+                    page.title()
+                )
+
+                detail_text = (
+                    page
+                    .locator("body")
+                    .inner_text()
+                )
 
                 parsed = parse_sacem_detail(
                     detail_text
                 )
 
-                returned_title = parsed.get(
-                    "title",
-                    "",
+                returned_title = (
+                    parsed.get(
+                        "title",
+                        "",
+                    )
+                )
+
+                # =================================================
+                # COMPARAISON DU TITRE
+                # =================================================
+
+                normalized_input_title = (
+                    normalize_key(
+                        title
+                    )
+                )
+
+                normalized_returned_title = (
+                    normalize_key(
+                        returned_title
+                    )
+                )
+
+                exact_match = (
+                    normalized_input_title
+                    ==
+                    normalized_returned_title
                 )
 
                 title_score = fuzz.ratio(
-                    normalize_key(title),
-                    normalize_key(returned_title),
+                    normalized_input_title,
+                    normalized_returned_title,
                 )
 
-                parsed["title_match_score"] = (
-                    title_score
+                parsed[
+                    "title_match_score"
+                ] = title_score
+
+                parsed[
+                    "exact_title_match"
+                ] = exact_match
+
+                print(
+                    "SACEM RETURNED TITLE:",
+                    repr(returned_title),
                 )
+
+                print(
+                    "SACEM TITLE SCORE:",
+                    title_score,
+                )
+
+                print(
+                    "SACEM EXACT TITLE:",
+                    exact_match,
+                )
+
+                # =================================================
+                # VALIDATION DU RESULTAT
+                # =================================================
 
                 if title_score < 85:
-                    parsed["status"] = "not_found"
-                    parsed["url"] = ""
-                else:
-                    parsed["status"] = "found"
-                    parsed["url"] = current_url
 
-                parsed["artist_input"] = artist
-                parsed["title_input"] = title
-                parsed["search_mode"] = search_mode
-                parsed["page_title"] = current_title
-                parsed["result_count"] = count
-                parsed["selected_result_index"] = (
-                    selected_index
-                )
-                parsed["search_url"] = search_url
+                    # La fiche existe et a été consultée,
+                    # mais le titre ne correspond pas assez.
+                    #
+                    # On garde son URL comme candidat pour
+                    # permettre une vérification manuelle.
+
+                    parsed[
+                        "status"
+                    ] = "not_found"
+
+                    parsed[
+                        "candidate_url"
+                    ] = current_url
+
+                    parsed[
+                        "url"
+                    ] = ""
+
+                    print(
+                        "SACEM CANDIDATE URL:",
+                        current_url,
+                    )
+
+                else:
+
+                    parsed[
+                        "status"
+                    ] = "found"
+
+                    parsed[
+                        "url"
+                    ] = current_url
+
+                    parsed[
+                        "candidate_url"
+                    ] = ""
+
+                    print(
+                        "SACEM FOUND URL:",
+                        current_url,
+                    )
+
+                # =================================================
+                # METADONNEES
+                # =================================================
+
+                parsed[
+                    "artist_input"
+                ] = artist
+
+                parsed[
+                    "title_input"
+                ] = title
+
+                parsed[
+                    "search_mode"
+                ] = search_mode
+
+                parsed[
+                    "page_title"
+                ] = current_title
+
+                parsed[
+                    "result_count"
+                ] = count
+
+                parsed[
+                    "selected_result_index"
+                ] = selected_index
+
+                parsed[
+                    "search_url"
+                ] = search_url
 
                 return parsed
 
             finally:
+
                 browser.close()
 
+# ============================================================
+# TEST
+# ============================================================
 
 if __name__ == "__main__":
-    agent = SacemAgent(headless=True)
 
-    result = agent.search(
-        "BOOK CLUB REUNION",
-        "Tom Howe",
+    # False = navigateur visible
+    # True  = navigateur invisible
+
+    agent = SacemAgent(
+        headless=True
     )
 
+    result = agent.search(
+        "PEACEFUL PARTY",
+        "",
+    )
+
+    print("")
+    print("==============================")
+    print("FINAL RESULT")
+    print("==============================")
     print(result)

@@ -41,6 +41,7 @@ from fastapi import (
     Form,
     HTTPException,
 )
+from playwright.sync_api import sync_playwright
 
  
 
@@ -246,30 +247,40 @@ def normalize_cache_value(value: str) -> str:
 import re
 
 
-def clean_title_for_sacem(title):
+def clean_title_for_sacem(title: str) -> str:
     title = str(title or "").strip()
 
-    # Enlève les parenthèses mais garde leur contenu
-    # "(Your Love) Higher" -> "Your Love Higher"
+    # Supprimer complètement les parenthèses
+    # Exemple :
+    # Another Love (Piano Version)
+    # -> Another Love
     title = re.sub(
-        r"\(([^)]*)\)",
-        r" \1 ",
+        r"\([^)]*\)",
+        " ",
         title,
     )
 
-    # Supprime les suffixes fréquents inutiles
+    # Supprimer aussi les crochets
+    title = re.sub(
+        r"\[[^\]]*\]",
+        " ",
+        title,
+    )
+
+    # Supprimer les suffixes fréquents après un tiret
     title = re.sub(
         r"\s*-\s*"
         r"(single version|radio edit|"
         r"album version|remastered.*|"
-        r"original version|edit)"
+        r"original version|edit|"
+        r"piano version|acoustic|instrumental)"
         r"\s*$",
         "",
         title,
         flags=re.IGNORECASE,
     )
 
-    # Nettoie les espaces
+    # Nettoyer les espaces
     title = re.sub(
         r"\s+",
         " ",
@@ -1321,27 +1332,47 @@ def merge_repeated_titles(rows):
 
 def enrich_sacem_sync(rows: list) -> list:
     """
-    Toute la session SACEM est exécutée dans un seul thread.
+    Enrichit les lignes avec les informations SACEM.
+
+    - Utilise le cache si disponible.
+    - Nettoie le titre avant recherche SACEM.
+    - Retente avec le titre seul si nécessaire.
+    - Met en cache uniquement les résultats "found".
+    - Conserve les anciennes données si la SACEM
+      est bloquée ou rencontre une erreur.
     """
+
     agent = SacemAgent(headless=True)
     enriched = []
 
     for position, row in enumerate(rows):
         print("ROW =", row)
 
+        # Copie de la ligne existante.
+        # Important : cela permet de conserver les anciennes
+        # informations SACEM si la nouvelle recherche échoue.
         new_row = dict(row)
 
-        title = str(new_row.get("title", "")).strip()
+        title = str(
+            new_row.get("title", "")
+        ).strip()
+
         artist = str(
             new_row.get("artist", "")
             or new_row.get("artiste", "")
         ).strip()
 
+        # ----------------------------------------
+        # 1. Titre vide
+        # ----------------------------------------
         if not title:
             new_row["statut_sacem"] = "titre vide"
             enriched.append(new_row)
             continue
 
+        # ----------------------------------------
+        # 2. Titres internes à ignorer
+        # ----------------------------------------
         internal_titles = (
             "GENERIQUE",
             "GÉNÉRIQUE",
@@ -1350,12 +1381,20 @@ def enrich_sacem_sync(rows: list) -> list:
             "MDP ",
         )
 
-        if title.upper().startswith(internal_titles):
-            new_row["statut_sacem"] = "ignoré - titre interne"
+        if title.upper().startswith(
+            internal_titles
+        ):
+            new_row["statut_sacem"] = (
+                "ignoré - titre interne"
+            )
+
             enriched.append(new_row)
             continue
 
         try:
+            # ----------------------------------------
+            # 3. Recherche dans le cache
+            # ----------------------------------------
             res = get_sacem_cache(
                 title,
                 artist,
@@ -1379,6 +1418,9 @@ def enrich_sacem_sync(rows: list) -> list:
 
                 source_sacem = "sacem"
 
+                # ----------------------------------------
+                # 4. Nettoyage du titre
+                # ----------------------------------------
                 sacem_title = clean_title_for_sacem(
                     title
                 )
@@ -1390,14 +1432,23 @@ def enrich_sacem_sync(rows: list) -> list:
                     repr(sacem_title),
                 )
 
-                # Recherche SACEM uniquement en cas de MISS
+                # ----------------------------------------
+                # 5. Recherche :
+                # titre nettoyé + artiste
+                # ----------------------------------------
                 res = agent.search(
                     sacem_title,
                     artist,
                 )
 
-                # Deuxième tentative sans artiste
-                if res.get("status") == "not_found":
+                # ----------------------------------------
+                # 6. Si pas trouvé :
+                # titre nettoyé seul
+                # ----------------------------------------
+                if (
+                    res.get("status")
+                    == "not_found"
+                ):
                     print(
                         "SACEM RETRY TITLE ONLY:",
                         sacem_title,
@@ -1408,8 +1459,13 @@ def enrich_sacem_sync(rows: list) -> list:
                         "",
                     )
 
-                # Cache uniquement les résultats trouvés
-                if res.get("status") == "found":
+                # ----------------------------------------
+                # 7. Cache uniquement les FOUND
+                # ----------------------------------------
+                if (
+                    res.get("status")
+                    == "found"
+                ):
                     save_sacem_cache(
                         title,
                         artist,
@@ -1425,90 +1481,283 @@ def enrich_sacem_sync(rows: list) -> list:
                 "SACEM SOURCE:",
                 source_sacem,
             )
-            print("SACEM SEARCH:", title, artist)
-          
 
-            if res.get("status") == "blocked":
-                new_row["statut_sacem"] = "blocked"
+            # ----------------------------------------
+            # 8. SACEM BLOQUÉE
+            # ----------------------------------------
+            if (
+                res.get("status")
+                == "blocked"
+            ):
+                print(
+                    "SACEM BLOQUEE - "
+                    "conservation des anciennes données"
+                )
+
+                # Vérifier si cette ligne possédait
+                # déjà des informations SACEM.
+                has_old_sacem_data = bool(
+                    new_row.get("compositeur")
+                    or new_row.get("auteur")
+                    or new_row.get("editeur")
+                    or new_row.get("code_iswc")
+                    or new_row.get(
+                        "url_sacem_detail"
+                    )
+                    or new_row.get(
+                        "url_sacem_candidate"
+                    )
+                )
+
+                if has_old_sacem_data:
+                    # --------------------------------
+                    # NE PAS écraser les anciennes infos
+                    # --------------------------------
+
+                    old_status = str(
+                        row.get(
+                            "statut_sacem",
+                            "",
+                        )
+                    ).strip()
+
+                    # Si l'ancien résultat était trouvé,
+                    # on conserve FOUND.
+                    if old_status == "found":
+                        new_row[
+                            "statut_sacem"
+                        ] = "found"
+
+                    # Sinon on conserve son ancien statut.
+                    elif old_status:
+                        new_row[
+                            "statut_sacem"
+                        ] = old_status
+
+                    else:
+                        new_row[
+                            "statut_sacem"
+                        ] = "à vérifier"
+
+                    new_row[
+                        "source_sacem"
+                    ] = (
+                        row.get(
+                            "source_sacem"
+                        )
+                        or
+                        "ancien résultat conservé"
+                    )
+
+                else:
+                    # Aucun ancien résultat disponible.
+                    new_row[
+                        "statut_sacem"
+                    ] = "blocked"
+
+                    new_row[
+                        "source_sacem"
+                    ] = "sacem"
+
                 enriched.append(new_row)
 
-                for remaining in rows[position + 1:]:
-                    skipped = dict(remaining)
-                    skipped["statut_sacem"] = (
-                        "non traité - SACEM bloquée"
+                # SACEM vient de bloquer l'accès.
+                # On arrête immédiatement les recherches.
+                #
+                # Les autres lignes sont conservées
+                # EXACTEMENT telles qu'elles étaient.
+                for remaining in (
+                    rows[position + 1:]
+                ):
+                    enriched.append(
+                        dict(remaining)
                     )
-                    enriched.append(skipped)
 
                 break
 
-            new_row["statut_sacem"] = res.get("status", "")
-            new_row["compositeur"] = "; ".join(
-                res.get("composers", [])
-            )
-            new_row["auteur"] = "; ".join(
-                res.get("authors", [])
-            )
-            new_row["editeur"] = "; ".join(
-                res.get("publishers", [])
-            )
-            new_row["sous_editeur"] = "; ".join(
-                res.get("sub_publishers", [])
-            )
-            new_row["interprete"] = "; ".join(
-                res.get("performers", [])
-            )
-            new_row["code_iswc"] = res.get("iswc", "")
-            new_row["url_sacem_candidate"] = res.get(
-            "candidate_url",
-            ""
-        )
+            # ----------------------------------------
+            # 9. Copier le nouveau résultat SACEM
+            # ----------------------------------------
 
-            search_url = res.get("search_url", "")
+            new_row[
+                "statut_sacem"
+            ] = res.get(
+                "status",
+                "",
+            )
 
-            if not search_url:
-                query = title
+            new_row[
+                "compositeur"
+            ] = "; ".join(
+                res.get(
+                    "composers",
+                    [],
+                )
+            )
 
-                if artist:
-                    query = f"{title},{artist}"
+            new_row[
+                "auteur"
+            ] = "; ".join(
+                res.get(
+                    "authors",
+                    [],
+                )
+            )
 
-                search_url = (
-                        "https://www.repertoire.sacem.fr/"
-                        "resultats?"
-                        "filters=titles,parties"
-                        f"&query={quote(query)}"
-                        "#searchBtn"
-                    )
+            new_row[
+                "editeur"
+            ] = "; ".join(
+                res.get(
+                    "publishers",
+                    [],
+                )
+            )
 
-            new_row["url_sacem_detail"] = res.get(
+            new_row[
+                "sous_editeur"
+            ] = "; ".join(
+                res.get(
+                    "sub_publishers",
+                    [],
+                )
+            )
+
+            new_row[
+                "interprete"
+            ] = "; ".join(
+                res.get(
+                    "performers",
+                    [],
+                )
+            )
+
+            new_row[
+                "code_iswc"
+            ] = res.get(
+                "iswc",
+                "",
+            )
+
+            # ----------------------------------------
+            # 10. URLs SACEM
+            # ----------------------------------------
+
+            # Fiche SACEM acceptée
+            new_row[
+                "url_sacem_detail"
+            ] = res.get(
                 "url",
                 "",
             )
 
-            query = title
+            # Fiche candidate :
+            # résultat trouvé mais matching insuffisant
+            new_row[
+                "url_sacem_candidate"
+            ] = res.get(
+                "candidate_url",
+                "",
+            )
 
-            if artist:
-                query = f"{title},{artist}"
+            # URL de la recherche SACEM
+            search_url = res.get(
+                "search_url",
+                "",
+            )
+
+            # Si l'agent n'a pas retourné
+            # l'URL de recherche, on la construit.
+            if not search_url:
+                query = title
+
+                if artist:
+                    query = (
+                        f"{title},{artist}"
+                    )
 
                 search_url = (
-                    "https://www.repertoire.sacem.fr/resultats?"
+                    "https://www."
+                    "repertoire.sacem.fr/"
+                    "resultats?"
                     "filters=titles,parties"
                     f"&query={quote(query)}"
                     "#searchBtn"
                 )
 
-                new_row["url_sacem"] = search_url
+            new_row[
+                "url_sacem"
+            ] = search_url
 
-                new_row["url_sacem_detail"] = (
-                    res.get("url", "")
+            new_row[
+                "source_sacem"
+            ] = source_sacem
+
+        # ----------------------------------------
+        # 11. ERREUR SACEM
+        # ----------------------------------------
+        except Exception as exc:
+            print(
+                "SACEM ERROR:",
+                repr(exc),
+            )
+
+            # Vérifier si nous possédions déjà
+            # des informations SACEM.
+            has_old_sacem_data = bool(
+                new_row.get("compositeur")
+                or new_row.get("auteur")
+                or new_row.get("editeur")
+                or new_row.get("code_iswc")
+                or new_row.get(
+                    "url_sacem_detail"
+                )
+                or new_row.get(
+                    "url_sacem_candidate"
+                )
+            )
+
+            if has_old_sacem_data:
+                # --------------------------------
+                # Conserver les anciennes données
+                # --------------------------------
+                print(
+                    "Anciennes données SACEM "
+                    "conservées"
                 )
 
-        except Exception as exc:
-            print("SACEM ERROR:", repr(exc))
+                new_row[
+                    "source_sacem"
+                ] = (
+                    new_row.get(
+                        "source_sacem"
+                    )
+                    or
+                    "ancien résultat conservé"
+                )
 
-            new_row["statut_sacem"] = (
-                f"error: {type(exc).__name__}: {exc}"
-            )
-            new_row["url_sacem"] = ""
+            else:
+                # --------------------------------
+                # Aucun ancien résultat
+                # --------------------------------
+                new_row[
+                    "statut_sacem"
+                ] = (
+                    f"error: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
+
+                new_row[
+                    "url_sacem"
+                ] = ""
+
+                new_row[
+                    "url_sacem_detail"
+                ] = ""
+
+                new_row[
+                    "url_sacem_candidate"
+                ] = ""
 
         enriched.append(new_row)
 
@@ -1521,10 +1770,14 @@ async def enrich_sacem(
 ):
     rows = json.loads(rows_json)
 
+    print("ROWS RECEIVED:", len(rows), flush=True)
+
     enriched = await asyncio.to_thread(
         enrich_sacem_sync,
         rows,
     )
+
+    # garde ici la suite de ton code actuel
 
     return {"rows": enriched}
 
@@ -2307,9 +2560,32 @@ def search(self, title: str, artist: str = "") -> dict:
     artist = str(artist).strip()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=self.headless,
+                
+
+        CHROMIUM_PATHS = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/opt/homebrew/bin/chromium",
+        ]
+
+        chromium_executable = next(
+            (
+                path
+                for path in CHROMIUM_PATHS
+                if os.path.exists(path)
+            ),
+            None,
         )
+
+        if chromium_executable:
+            browser = p.chromium.launch(
+                headless=True,
+                executable_path=chromium_executable,
+            )
+        else:
+            browser = p.chromium.launch(
+                headless=True,
+            )
 
         context = browser.new_context(
         viewport={"width": 1450, "height": 900},
@@ -2433,10 +2709,22 @@ def search(self, title: str, artist: str = "") -> dict:
                 parsed["status"] = "not_found"
                 parsed["candidate_url"] = current_url
                 parsed["url"] = ""
+
             else:
                 parsed["status"] = "found"
                 parsed["url"] = current_url
+                parsed["candidate_url"] = ""
 
+            print(
+                "SACEM DETAIL URL:",
+                current_url,
+            )
+
+            print(
+                "SACEM CANDIDATE URL:",
+                parsed.get("candidate_url", ""),
+            )
+            
             parsed["artist_input"] = artist
             parsed["title_input"] = title
             parsed["search_mode"] = search_mode
@@ -2659,3 +2947,13 @@ def delete_project(project_id: int):
         "ok": True,
         "project_id": project_id,
     }
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        log_level="info",
+    )

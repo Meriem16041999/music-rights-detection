@@ -5,7 +5,7 @@ import HistoryPage from "./HistoryPage";
  
 
 
-const API = "http://localhost:8000";
+const API = "http://127.0.0.1:8000";
 
 function App() {
   const videoRef = useRef(null);
@@ -1886,14 +1886,26 @@ return (
 
 {selectedRow?.url_sacem && (
   <a
-    href={buildSacemSearchUrl(selectedRow)}
+    href={selectedRow.url_sacem}
     target="_blank"
     rel="noopener noreferrer"
     className="sacem-link"
   >
-    🔎 Ouvrir dans le répertoire SACEM
+    🔎 Ouvrir la fiche SACEM
   </a>
 )}
+
+{!selectedRow?.url_sacem &&
+  selectedRow?.url_sacem_candidate && (
+    <a
+      href={selectedRow.url_sacem_candidate}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="sacem-link candidate"
+    >
+      ⚠️ Voir la fiche SACEM candidate
+    </a>
+  )}
  
 
   {!selectedRow?.url_sacem &&
