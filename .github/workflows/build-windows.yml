@@ -1,0 +1,49 @@
+name: Build Music Rights Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Recuperer le projet
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Installer les dependances Python
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Construire le backend Windows
+        shell: powershell
+        run: |
+          pyinstaller --clean --onedir --name music-rights-backend backend_api.py
+
+      - name: Installer les dependances frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Construire l'installateur Windows
+        working-directory: frontend
+        run: npm run desktop:build:win
+
+      - name: Sauvegarder l'installateur
+        uses: actions/upload-artifact@v4
+        with:
+          name: Music-Rights-Windows
+          path: frontend/dist/*.exe
+          if-no-files-found: error
