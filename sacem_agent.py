@@ -592,17 +592,34 @@ class SacemAgent:
             # =================================================
 
             CHROME_PATHS = [
-                (
-                    "/Applications/Google Chrome.app/"
-                    "Contents/MacOS/Google Chrome"
-                ),
-                (
-                    "/Applications/Chromium.app/"
-                    "Contents/MacOS/Chromium"
-                ),
-                "/opt/homebrew/bin/chromium",
-                "/usr/local/bin/chromium",
-            ]
+    # -------------------------
+    # macOS
+    # -------------------------
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+
+    # -------------------------
+    # Windows
+    # -------------------------
+    os.path.expandvars(
+        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"
+    ),
+
+    os.path.expandvars(
+        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
+    ),
+
+    os.path.expandvars(
+        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
+    ),
+
+    # -------------------------
+    # Linux
+    # -------------------------
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+]
 
             chrome_executable = next(
                 (
@@ -642,7 +659,7 @@ class SacemAgent:
             )
 
             browser = playwright.chromium.launch(
-                headless=self.headless,
+                headless=False,
                 executable_path=chrome_executable,
             )
 

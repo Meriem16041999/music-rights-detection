@@ -10,8 +10,10 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron": "electron .",
-    "desktop:build": "npm run build && electron-builder"
+    "desktop:build": "npm run build && electron-builder",
+    "desktop:build:win": "npm run build && electron-builder --win"
   },
+  
   "dependencies": {
     "axios": "^1.18.1",
     "react": "^19.2.7",
@@ -45,7 +47,10 @@
       }
     ],
     "mac": {
-      "target": "dmg"
+    "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
     }
   }
 }

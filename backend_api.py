@@ -52,11 +52,65 @@ from playwright.sync_api import sync_playwright
 
  
 
-load_dotenv()
+from pathlib import Path
+import platform
 
-ACR_HOST = os.getenv("ACR_HOST", "").strip()
-ACR_ACCESS_KEY = os.getenv("ACR_ACCESS_KEY", "").strip()
-ACR_ACCESS_SECRET = os.getenv("ACR_ACCESS_SECRET", "").strip()
+def get_app_config_dir():
+    system = platform.system()
+
+    # Windows
+    if system == "Windows":
+        return (
+            Path(os.environ["LOCALAPPDATA"])
+            / "Music Rights"
+        )
+
+    # Mac
+    if system == "Darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Music Rights"
+        )
+
+    # Linux
+    return (
+        Path.home()
+        / ".local"
+        / "share"
+        / "Music Rights"
+    )
+
+
+APP_CONFIG_DIR = get_app_config_dir()
+
+APP_CONFIG_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+ENV_PATH = APP_CONFIG_DIR / ".env"
+
+load_dotenv(
+    dotenv_path=ENV_PATH
+)
+
+ACR_HOST = os.getenv(
+    "ACR_HOST",
+    "",
+).strip()
+
+ACR_ACCESS_KEY = os.getenv(
+    "ACR_ACCESS_KEY",
+    "",
+).strip()
+
+ACR_ACCESS_SECRET = os.getenv(
+    "ACR_ACCESS_SECRET",
+    "",
+).strip()
+
 PROJECTS_DB = Path("projects.sqlite3")
 JOBS_DB = Path("jobs.sqlite3")
 JOBS_DIR = Path("cache/jobs")

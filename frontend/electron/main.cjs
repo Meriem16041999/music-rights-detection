@@ -10,6 +10,10 @@ const {
 const path = require("path");
 
 let backendProcess = null;
+const backendExecutable =
+  process.platform === "win32"
+    ? "music-rights-backend.exe"
+    : "music-rights-backend";
 
 function startBackend() {
   let backendPath;
@@ -19,7 +23,7 @@ function startBackend() {
       process.resourcesPath,
       "backend",
       "music-rights-backend",
-      "music-rights-backend"
+      backendExecutable
     );
   } else {
     backendPath = path.join(
@@ -28,7 +32,7 @@ function startBackend() {
       "..",
       "dist",
       "music-rights-backend",
-      "music-rights-backend"
+      backendExecutable
     );
   }
 
