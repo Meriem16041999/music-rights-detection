@@ -31,7 +31,7 @@ jobs:
       - name: Construire le backend Windows
         shell: powershell
         run: |
-          pyinstaller --clean --onedir --name music-rights-backend backend_api.py
+          pyinstaller --clean --onedir --name music-rights-backend --collect-all fastapi --collect-all starlette --collect-all pydantic backend_api.py
 
       - name: Installer les dependances frontend
         working-directory: frontend
