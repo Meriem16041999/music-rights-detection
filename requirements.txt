@@ -8,3 +8,6 @@ rapidfuzz
 playwright
 beautifulsoup4
 pyarrow
+fastapi
+uvicorn
+python-multipart
