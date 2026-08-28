@@ -33,16 +33,50 @@ jobs:
         run: |
           choco install ffmpeg -y
 
-          $ffmpeg = (Get-Command ffmpeg).Source
-          $ffprobe = (Get-Command ffprobe).Source
-
-          Write-Host "FFMPEG = $ffmpeg"
-          Write-Host "FFPROBE = $ffprobe"
-
           New-Item -ItemType Directory -Force -Path "windows-tools"
 
-          Copy-Item $ffmpeg "windows-tools\ffmpeg.exe"
-          Copy-Item $ffprobe "windows-tools\ffprobe.exe"
+          $ffmpegReal = Get-ChildItem `
+            "C:\ProgramData\chocolatey\lib\ffmpeg" `
+            -Recurse `
+            -Filter "ffmpeg.exe" |
+            Where-Object {
+              $_.FullName -like "*\bin\ffmpeg.exe"
+            } |
+            Select-Object -First 1
+
+          $ffprobeReal = Get-ChildItem `
+            "C:\ProgramData\chocolatey\lib\ffmpeg" `
+            -Recurse `
+            -Filter "ffprobe.exe" |
+            Where-Object {
+              $_.FullName -like "*\bin\ffprobe.exe"
+            } |
+            Select-Object -First 1
+
+          if (-not $ffmpegReal) {
+            throw "Vrai ffmpeg.exe introuvable"
+          }
+
+          if (-not $ffprobeReal) {
+            throw "Vrai ffprobe.exe introuvable"
+          }
+
+          Write-Host "FFMPEG REEL = $($ffmpegReal.FullName)"
+          Write-Host "FFPROBE REEL = $($ffprobeReal.FullName)"
+
+          Copy-Item `
+            $ffmpegReal.FullName `
+            "windows-tools\ffmpeg.exe"
+
+          Copy-Item `
+            $ffprobeReal.FullName `
+            "windows-tools\ffprobe.exe"
+
+          Write-Host "=== TEST FFMPEG ==="
+          & "windows-tools\ffmpeg.exe" -version
+
+          Write-Host "=== TEST FFPROBE ==="
+          & "windows-tools\ffprobe.exe" -version
 
           Write-Host "=== CONTENU WINDOWS-TOOLS ==="
           Get-ChildItem "windows-tools"
