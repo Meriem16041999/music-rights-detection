@@ -29,40 +29,40 @@ jobs:
           pip install pyinstaller
 
       - name: Construire le backend Windows
-  shell: powershell
-  run: |
-    python -c "import fastapi; print('FASTAPI AVANT PYINSTALLER:', fastapi.__file__)"
+        shell: powershell
+        run: |
+          python -c "import fastapi; print('FASTAPI AVANT PYINSTALLER:', fastapi.__file__)"
 
-    python -m PyInstaller `
-      --clean `
-      --noconfirm `
-      --onedir `
-      --name music-rights-backend `
-      --collect-all fastapi `
-      --collect-all starlette `
-      --collect-all pydantic `
-      --collect-all pydantic_core `
-      --hidden-import fastapi `
-      --hidden-import fastapi.applications `
-      --hidden-import fastapi.routing `
-      --hidden-import fastapi.middleware `
-      --hidden-import fastapi.middleware.cors `
-      --hidden-import uvicorn `
-      backend_api.py
+          python -m PyInstaller `
+            --clean `
+            --noconfirm `
+            --onedir `
+            --name music-rights-backend `
+            --collect-all fastapi `
+            --collect-all starlette `
+            --collect-all pydantic `
+            --collect-all pydantic_core `
+            --hidden-import fastapi `
+            --hidden-import fastapi.applications `
+            --hidden-import fastapi.routing `
+            --hidden-import fastapi.middleware `
+            --hidden-import fastapi.middleware.cors `
+            --hidden-import uvicorn `
+            backend_api.py
 
-    Write-Host "=== VERIFICATION FASTAPI DANS LE BUILD ==="
+          Write-Host "=== VERIFICATION FASTAPI DANS LE BUILD ==="
 
-    Get-ChildItem `
-      "dist\music-rights-backend" `
-      -Recurse `
-      -Filter "fastapi*" |
-      Select-Object FullName
+          Get-ChildItem `
+            "dist\music-rights-backend" `
+            -Recurse `
+            -Filter "fastapi*" |
+            Select-Object FullName
 
-    if (-not (
-      Test-Path "dist\music-rights-backend\_internal\fastapi"
-    )) {
-      throw "FastAPI absent du build PyInstaller"
-    }
+          if (-not (
+            Test-Path "dist\music-rights-backend\_internal\fastapi"
+          )) {
+            throw "FastAPI absent du build PyInstaller"
+          }
       - name: Installer les dependances frontend
         working-directory: frontend
         run: npm ci
