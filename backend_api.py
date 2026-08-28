@@ -42,16 +42,8 @@ from fastapi import (
 )
 from playwright.sync_api import sync_playwright
 import shutil
-
- 
-
-
-
- 
- 
-
- 
-
+from demucs.separate import main as demucs_main
+import sys
 from pathlib import Path
 import platform
 
@@ -787,15 +779,14 @@ def load_stats():
 def separate_music_with_demucs(input_wav: str) -> str:
     out_dir = tempfile.mkdtemp(prefix="demucs_")
 
-    subprocess.run(
-        [
-            "python", "-m", "demucs",
-            "--two-stems", "vocals",
-            "-o", out_dir,
-            input_wav,
-        ],
-        check=True,
-    )
+    demucs_main([
+    "--two-stems",
+    "vocals",
+    "-o",
+    out_dir,
+    input_wav,
+])
+    
 
     stem_name = Path(input_wav).stem
     no_vocals = Path(out_dir) / "htdemucs" / stem_name / "no_vocals.wav"
@@ -1255,27 +1246,23 @@ def clean_acr_hits(hits):
 def clean_chunk_with_demucs(chunk_path: str) -> str:
     out_dir = tempfile.mkdtemp(prefix="demucs_chunk_")
 
-    result = subprocess.run(
-    [
-        "python",
-        "-m",
-        "demucs",
-        "--two-stems",
-        "vocals",
-        "-o",
-        out_dir,
-        chunk_path,
-    ],
-    capture_output=True,
-    text=True,
-)
+    try:
+        demucs_main([
+            "--two-stems",
+            "vocals",
+            "-o",
+            out_dir,
+            chunk_path,
+        ])
 
-    if result.returncode != 0:
+    except Exception as exc:
         print("========== DEMUCS ERROR ==========")
-        print(result.stdout)
-        print(result.stderr)
+        print(repr(exc))
         print("==================================")
-    return chunk_path
+
+        return chunk_path
+
+     
 
     stem = Path(chunk_path).stem
     cleaned = Path(out_dir) / "htdemucs" / stem / "no_vocals.wav"
@@ -1448,7 +1435,13 @@ def enrich_sacem_sync(rows: list) -> list:
       est bloquée ou rencontre une erreur.
     """
 
-    agent = SacemAgent(headless=True)
+    is_server_linux = (
+        platform.system() == "Linux"
+    )
+
+    agent = SacemAgent(
+    headless=is_server_linux
+)
     enriched = []
 
     for position, row in enumerate(rows):

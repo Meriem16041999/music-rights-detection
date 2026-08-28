@@ -27,7 +27,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-      - name: Installer FFmpeg
+
+      - name: Installer et preparer FFmpeg
         shell: powershell
         run: |
           choco install ffmpeg -y
@@ -43,6 +44,7 @@ jobs:
           Copy-Item $ffmpeg "windows-tools\ffmpeg.exe"
           Copy-Item $ffprobe "windows-tools\ffprobe.exe"
 
+          Write-Host "=== CONTENU WINDOWS-TOOLS ==="
           Get-ChildItem "windows-tools"
 
       - name: Construire le backend Windows
@@ -64,6 +66,7 @@ jobs:
             --collect-all librosa `
             --collect-all soundfile `
             --collect-all numba `
+            --collect-all demucs `
             --hidden-import fastapi `
             --hidden-import fastapi.applications `
             --hidden-import fastapi.routing `
@@ -71,7 +74,8 @@ jobs:
             --hidden-import fastapi.middleware.cors `
             --hidden-import uvicorn `
             backend_api.py
-                    Write-Host "=== VERIFICATION FFMPEG ==="
+
+          Write-Host "=== VERIFICATION FFMPEG ==="
 
           if (-not (Test-Path "dist\music-rights-backend\_internal\tools\ffmpeg.exe")) {
             throw "ffmpeg.exe absent du build"
@@ -82,7 +86,8 @@ jobs:
           }
 
           Write-Host "FFmpeg et FFprobe sont bien embarques."
-          Write-Host "=== VERIFICATION FASTAPI DANS LE BUILD ==="
+
+          Write-Host "=== VERIFICATION FASTAPI ==="
 
           Get-ChildItem `
             "dist\music-rights-backend" `
@@ -95,6 +100,9 @@ jobs:
           )) {
             throw "FastAPI absent du build PyInstaller"
           }
+
+          Write-Host "FastAPI est bien embarque."
+
       - name: Installer les dependances frontend
         working-directory: frontend
         run: npm ci
