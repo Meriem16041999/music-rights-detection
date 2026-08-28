@@ -11,3 +11,6 @@ pyarrow
 fastapi
 uvicorn
 python-multipart
+librosa
+soundfile
+numba
