@@ -27,6 +27,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+      - name: Installer FFmpeg
+        shell: powershell
+        run: |
+          choco install ffmpeg -y
+
+          $ffmpeg = (Get-Command ffmpeg).Source
+          $ffprobe = (Get-Command ffprobe).Source
+
+          Write-Host "FFMPEG = $ffmpeg"
+          Write-Host "FFPROBE = $ffprobe"
+
+          New-Item -ItemType Directory -Force -Path "windows-tools"
+
+          Copy-Item $ffmpeg "windows-tools\ffmpeg.exe"
+          Copy-Item $ffprobe "windows-tools\ffprobe.exe"
+
+          Get-ChildItem "windows-tools"
 
       - name: Construire le backend Windows
         shell: powershell
@@ -38,6 +55,8 @@ jobs:
             --noconfirm `
             --onedir `
             --name music-rights-backend `
+            --add-binary "windows-tools\ffmpeg.exe;tools" `
+            --add-binary "windows-tools\ffprobe.exe;tools" `
             --collect-all fastapi `
             --collect-all starlette `
             --collect-all pydantic `
@@ -52,7 +71,17 @@ jobs:
             --hidden-import fastapi.middleware.cors `
             --hidden-import uvicorn `
             backend_api.py
+                    Write-Host "=== VERIFICATION FFMPEG ==="
 
+          if (-not (Test-Path "dist\music-rights-backend\_internal\tools\ffmpeg.exe")) {
+            throw "ffmpeg.exe absent du build"
+          }
+
+          if (-not (Test-Path "dist\music-rights-backend\_internal\tools\ffprobe.exe")) {
+            throw "ffprobe.exe absent du build"
+          }
+
+          Write-Host "FFmpeg et FFprobe sont bien embarques."
           Write-Host "=== VERIFICATION FASTAPI DANS LE BUILD ==="
 
           Get-ChildItem `

@@ -29,7 +29,6 @@ from datetime import datetime, timezone
 import uuid
 import json
 import sqlite3
-import threading
 import traceback
 from fastapi import BackgroundTasks
 from urllib.parse import quote
@@ -42,6 +41,7 @@ from fastapi import (
     HTTPException,
 )
 from playwright.sync_api import sync_playwright
+import shutil
 
  
 
@@ -91,6 +91,58 @@ APP_CONFIG_DIR.mkdir(
 )
 
 ENV_PATH = APP_CONFIG_DIR / ".env"
+def get_tool_path(tool_name: str) -> str:
+    """
+    Trouve ffmpeg / ffprobe.
+
+    - Desktop Windows packagé :
+      utilise les exécutables embarqués.
+    - Développement / Mac :
+      utilise ceux installés sur le système.
+    """
+
+    exe_name = (
+        f"{tool_name}.exe"
+        if os.name == "nt"
+        else tool_name
+    )
+
+    # Application PyInstaller
+    if getattr(sys, "frozen", False):
+        internal_dir = Path(sys._MEIPASS)
+
+        candidates = [
+            internal_dir / "tools" / exe_name,
+            internal_dir / exe_name,
+        ]
+
+        for candidate in candidates:
+            if candidate.exists():
+                print(
+                    f"{tool_name.upper()} PATH:",
+                    candidate,
+                )
+                return str(candidate)
+
+    # Installation système / développement
+    system_path = shutil.which(exe_name)
+
+    if system_path:
+        return system_path
+
+    raise FileNotFoundError(
+        f"{exe_name} introuvable. "
+        "Music Rights ne contient pas "
+        "l'outil nécessaire."
+    )
+
+
+def get_ffmpeg_path() -> str:
+    return get_tool_path("ffmpeg")
+
+
+def get_ffprobe_path() -> str:
+    return get_tool_path("ffprobe")
 
 load_dotenv(
     dotenv_path=ENV_PATH
@@ -1144,7 +1196,7 @@ def analyze_acr_chunk(
 
 def extract_audio(video_path: str, wav_path: str):
     subprocess.check_call([
-        "ffmpeg", "-y",
+        get_ffmpeg_path(), "-y",
         "-i", video_path,
         "-vn",
         "-ac", "1",
@@ -1155,7 +1207,7 @@ def extract_audio(video_path: str, wav_path: str):
 
 def make_chunk(wav_path: str, start: int, duration: int, out_path: str):
     subprocess.run([
-        "ffmpeg", "-y",
+        get_ffmpeg_path(), "-y",
         "-ss", str(start),
         "-i", wav_path,
         "-t", str(duration),
@@ -1167,7 +1219,7 @@ def make_chunk(wav_path: str, start: int, duration: int, out_path: str):
 
 def get_duration(path: str) -> int:
     cmd = [
-        "ffprobe", "-v", "error",
+        get_ffprobe_path(), "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         path,
