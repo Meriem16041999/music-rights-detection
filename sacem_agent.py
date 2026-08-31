@@ -158,6 +158,10 @@ class SacemAgent:
     def __init__(self, headless=True):
         self.headless = headless
 
+        self.playwright = None
+        self.browser = None
+        self.page = None
+
     # ========================================================
     # DETECTION BLOCAGE CLOUDFRONT
     # ========================================================
@@ -571,7 +575,105 @@ class SacemAgent:
         )
 
         return winner["index"]
-            
+    def start(self):
+        """
+        Démarre Playwright + Chrome une seule fois.
+        Les recherches suivantes réutilisent la même page.
+        """
+
+        if self.browser is not None:
+            return
+
+        self.playwright = sync_playwright().start()
+
+        chrome_paths = [
+            # macOS
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+
+            # Windows
+            os.path.expandvars(
+                r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"
+            ),
+            os.path.expandvars(
+                r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
+            ),
+            os.path.expandvars(
+                r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
+            ),
+
+            # Linux
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+        ]
+
+        chrome_executable = next(
+            (
+                path
+                for path in chrome_paths
+                if path and os.path.exists(path)
+            ),
+            None,
+        )
+
+        if not chrome_executable:
+            raise RuntimeError(
+                "SACEM BROWSER MISSING"
+            )
+
+        print(
+            "SACEM USING CHROME:",
+            chrome_executable,
+        )
+
+        self.browser = (
+            self.playwright.chromium.launch(
+                headless=self.headless,
+                executable_path=chrome_executable,
+            )
+        )
+
+        self.page = self.browser.new_page(
+            viewport={
+                "width": 1450,
+                "height": 900,
+            },
+            locale="fr-FR",
+        )
+
+        print(
+            "SACEM BROWSER STARTED"
+        )
+
+
+    def close(self):
+        """
+        Ferme proprement Chrome et Playwright.
+        """
+
+        if self.browser is not None:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+
+            self.browser = None
+
+        self.page = None
+
+        if self.playwright is not None:
+            try:
+                self.playwright.stop()
+            except Exception:
+                pass
+
+            self.playwright = None
+
+        print(
+            "SACEM BROWSER CLOSED"
+        )
+                
     def search(
         self,
         title: str,
@@ -580,115 +682,20 @@ class SacemAgent:
 
         title = str(title or "").strip()
         artist = str(artist or "").strip()
+        if self.page is None:
+            self.start()
 
-        with sync_playwright() as playwright:
+        page = self.page
 
-            # =================================================
-            # NAVIGATEUR
-            #
-            # Dans la version PyInstaller, on utilise Chrome
-            # installé sur le Mac au lieu du Chromium interne
-            # de Playwright.
-            # =================================================
-
-            CHROME_PATHS = [
-    # -------------------------
-    # macOS
-    # -------------------------
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-
-    # -------------------------
-    # Windows
-    # -------------------------
-    os.path.expandvars(
-        r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"
-    ),
-
-    os.path.expandvars(
-        r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
-    ),
-
-    os.path.expandvars(
-        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
-    ),
-
-    # -------------------------
-    # Linux
-    # -------------------------
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-]
-
-            chrome_executable = next(
-                (
-                    path
-                    for path in CHROME_PATHS
-                    if os.path.exists(path)
-                ),
-                None,
-            )
-
-            if not chrome_executable:
-
-                print(
-                    "SACEM BROWSER MISSING"
-                )
-
-                return {
-                    "status": "browser_missing",
-                    "title": "",
-                    "iswc": "",
-                    "authors": [],
-                    "composers": [],
-                    "publishers": [],
-                    "sub_publishers": [],
-                    "performers": [],
-                    "title_input": title,
-                    "artist_input": artist,
-                    "search_mode": "",
-                    "url": "",
-                    "candidate_url": "",
-                    "search_url": "",
-                }
-
-            print(
-                "SACEM USING CHROME:",
-                chrome_executable,
-            )
-
-            browser = playwright.chromium.launch(
-                headless=False,
-                executable_path=chrome_executable,
-            )
-
-            page = browser.new_page(
-                viewport={
-                    "width": 1450,
-                    "height": 900,
-                },
-                locale="fr-FR",
-            )
-
-            try:
-
-                # =================================================
-                # PREMIERE RECHERCHE :
-                # TITRE + ARTISTE
-                # =================================================
-
-                body_text = self._run_search(
-                    page,
-                    title,
-                    artist,
-                )
-
-                # -------------------------------------------------
-                # Blocage SACEM / CloudFront
-                # -------------------------------------------------
-
-                if self._is_blocked(body_text):
+        # ensuite ton code actuel :
+        body_text = self._run_search(
+            page,
+            title,
+            artist,
+    )
+        
+         
+        if self._is_blocked(body_text):
 
                     return {
                         "status": "blocked",
@@ -708,19 +715,19 @@ class SacemAgent:
                         "raw_text": body_text[:2000],
                     }
 
-                search_mode = "title_artist"
-                search_url = page.url
+        search_mode = "title_artist"
+        search_url = page.url
 
                 # =================================================
                 # VERIFIER SI LA RECHERCHE A DES RESULTATS
                 # =================================================
 
-                has_results = self._has_results(
+        has_results = self._has_results(
                     body_text,
                     page,
                 )
 
-                print(
+        print(
                     "SACEM HAS RESULTS:",
                     has_results,
                 )
@@ -731,7 +738,7 @@ class SacemAgent:
                 # refaire avec le titre uniquement.
                 # =================================================
 
-                if not has_results:
+        if not has_results:
 
                     print("")
                     print(
@@ -782,15 +789,15 @@ class SacemAgent:
                 # RECUPERATION DES RESULTATS
                 # =================================================
 
-                detail_links = (
+        detail_links = (
                     self._get_detail_links(
                         page
                     )
                 )
 
-                count = detail_links.count()
+        count = detail_links.count()
 
-                print(
+        print(
                     "FINAL SACEM RESULT COUNT:",
                     count,
                 )
@@ -799,7 +806,7 @@ class SacemAgent:
                 # AUCUN RESULTAT
                 # =================================================
 
-                if count == 0:
+        if count == 0:
 
                     return {
                         "status": "not_found",
@@ -823,7 +830,7 @@ class SacemAgent:
                 # SELECTION DU MEILLEUR RESULTAT
                 # =================================================
 
-                selected_index = (
+        selected_index = (
                     self
                     ._choose_result_index_from_page(
                         page,
@@ -838,44 +845,44 @@ class SacemAgent:
                 )
 
                 # Sécurité
-                if selected_index >= count:
+        if selected_index >= count:
                     selected_index = 0
 
-                if selected_index < 0:
+        if selected_index < 0:
                     selected_index = 0
 
-                print("")
-                print(
+        print("")
+        print(
                     "CLICKING SACEM RESULT INDEX:",
                     selected_index,
                 )
-                print("")
+        print("")
 
                 # =================================================
                 # CLIC SUR "VOIR LE DETAIL"
                 # =================================================
 
-                detail_links.nth(
+        detail_links.nth(
                     selected_index
                 ).click()
 
-                try:
+        try:
 
                     page.wait_for_url(
                         "**/detail-oeuvre/**",
                         timeout=10000,
                     )
 
-                except Exception:
+        except Exception:
                     pass
 
-                page.wait_for_timeout(
+        page.wait_for_timeout(
                     1500
                 )
 
-                current_url = page.url
+        current_url = page.url
 
-                print(
+        print(
                     "SACEM DETAIL URL:",
                     current_url,
                 )
@@ -884,7 +891,7 @@ class SacemAgent:
                 # VERIFIER QUE NOUS SOMMES SUR UNE FICHE
                 # =================================================
 
-                if (
+        if (
                     "/detail-oeuvre/"
                     not in current_url
                 ):
@@ -914,21 +921,21 @@ class SacemAgent:
                 # EXTRACTION DE LA FICHE SACEM
                 # =================================================
 
-                current_title = (
+        current_title = (
                     page.title()
                 )
 
-                detail_text = (
+        detail_text = (
                     page
                     .locator("body")
                     .inner_text()
                 )
 
-                parsed = parse_sacem_detail(
+        parsed = parse_sacem_detail(
                     detail_text
                 )
 
-                returned_title = (
+        returned_title = (
                     parsed.get(
                         "title",
                         "",
@@ -939,48 +946,48 @@ class SacemAgent:
                 # COMPARAISON DU TITRE
                 # =================================================
 
-                normalized_input_title = (
+        normalized_input_title = (
                     normalize_key(
                         title
                     )
                 )
 
-                normalized_returned_title = (
+        normalized_returned_title = (
                     normalize_key(
                         returned_title
                     )
                 )
 
-                exact_match = (
+        exact_match = (
                     normalized_input_title
                     ==
                     normalized_returned_title
                 )
 
-                title_score = fuzz.ratio(
+        title_score = fuzz.ratio(
                     normalized_input_title,
                     normalized_returned_title,
                 )
 
-                parsed[
+        parsed[
                     "title_match_score"
                 ] = title_score
 
-                parsed[
+        parsed[
                     "exact_title_match"
                 ] = exact_match
 
-                print(
+        print(
                     "SACEM RETURNED TITLE:",
                     repr(returned_title),
                 )
 
-                print(
+        print(
                     "SACEM TITLE SCORE:",
                     title_score,
                 )
 
-                print(
+        print(
                     "SACEM EXACT TITLE:",
                     exact_match,
                 )
@@ -989,7 +996,7 @@ class SacemAgent:
                 # VALIDATION DU RESULTAT
                 # =================================================
 
-                if title_score < 85:
+        if title_score < 85:
 
                     # La fiche existe et a été consultée,
                     # mais le titre ne correspond pas assez.
@@ -1014,7 +1021,7 @@ class SacemAgent:
                         current_url,
                     )
 
-                else:
+        else:
 
                     parsed[
                         "status"
@@ -1037,39 +1044,38 @@ class SacemAgent:
                 # METADONNEES
                 # =================================================
 
-                parsed[
+        parsed[
                     "artist_input"
                 ] = artist
 
-                parsed[
+        parsed[
                     "title_input"
                 ] = title
 
-                parsed[
+        parsed[
                     "search_mode"
                 ] = search_mode
 
-                parsed[
+        parsed[
                     "page_title"
                 ] = current_title
 
-                parsed[
+        parsed[
                     "result_count"
                 ] = count
 
-                parsed[
+        parsed[
                     "selected_result_index"
                 ] = selected_index
 
-                parsed[
+        parsed[
                     "search_url"
                 ] = search_url
 
-                return parsed
+        return parsed
 
-            finally:
-
-                browser.close()
+            
+               
 
 # ============================================================
 # TEST

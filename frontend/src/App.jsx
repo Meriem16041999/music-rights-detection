@@ -1269,9 +1269,10 @@ async function analyzeMdp() {
           "Content-Type":
             "multipart/form-data",
         },
-      }
-    );
 
+        timeout: 600000,
+      }
+);
     setRows(
       response.data.rows || []
     );
