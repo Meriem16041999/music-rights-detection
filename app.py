@@ -439,7 +439,7 @@ def cached_sacem_lookup(title: str, artist: str) -> dict:
     if p.exists():
         return json.loads(p.read_text())
 
-    agent = SacemAgent(headless=True)
+    agent = SacemAgent(headless=False)
     result = agent.search(title, artist)
 
     p.write_text(json.dumps(result, ensure_ascii=False, indent=2))
@@ -764,7 +764,7 @@ def aggregate_video_occurrences(
 # ============================================================
 @st.cache_data(show_spinner=False)
 def cached_sacem_search(title: str, artist: str) -> dict:
-    agent = SacemAgent(headless=True)
+    agent = SacemAgent(headless=False)
     return agent.search(title, artist)
 
 

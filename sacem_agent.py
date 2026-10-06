@@ -740,50 +740,40 @@ class SacemAgent:
 
         if not has_results:
 
-                    print("")
-                    print(
-                        "NO RESULT WITH ARTIST"
-                    )
-                    print(
-                        "TRYING TITLE-ONLY FALLBACK"
-                    )
-                    print("")
+            print("")
+            print(
+                "SACEM NO RESULT:"
+            )
+            print(
+                "TITLE  =",
+                title
+            )
+            print(
+                "ARTIST =",
+                artist
+            )
+            print("")
 
-                    body_text = self._run_search(
-                        page,
-                        title,
-                        "",
-                    )
-
-                    search_mode = (
-                        "title_only_fallback"
-                    )
-
-                    search_url = page.url
-
-                    if self._is_blocked(
-                        body_text
-                    ):
-
-                        return {
-                            "status": "blocked",
-                            "title": "",
-                            "iswc": "",
-                            "authors": [],
-                            "composers": [],
-                            "publishers": [],
-                            "sub_publishers": [],
-                            "performers": [],
-                            "title_input": title,
-                            "artist_input": artist,
-                            "search_mode": search_mode,
-                            "url": page.url,
-                            "candidate_url": "",
-                            "search_url": page.url,
-                            "raw_text": (
-                                body_text[:2000]
-                            ),
-                        }
+            return {
+                "status": "not_found",
+                "title": "",
+                "iswc": "",
+                "authors": [],
+                "composers": [],
+                "publishers": [],
+                "sub_publishers": [],
+                "performers": [],
+                "title_input": title,
+                "artist_input": artist,
+                "search_mode": "title_artist",
+                "url": "",
+                "candidate_url": "",
+                "search_url": search_url,
+                "result_count": 0,
+                "selected_result_index": -1,
+                "raw_text": body_text[:2000],
+            }
+ 
 
                 # =================================================
                 # RECUPERATION DES RESULTATS

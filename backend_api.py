@@ -46,6 +46,19 @@ from demucs.separate import main as demucs_main
 import sys
 from pathlib import Path
 import platform
+import threading
+from services.edl_service import (
+    parse_edl_text,
+    
+)
+from services.matching_service import (
+    merge_edl_with_acr,
+)
+from services.sacem_service import(get_sacem_surnames,clean_title_for_sacem,normalize_sacem_search_text, validate_sacem_against_acr, save_sacem_cache, get_sacem_cache, enrich_sacem_sync, init_sacem_cache, normalize_cache_value   )
+from services.rights_memory_service import (
+    init_rights_memory,
+    save_rights_memory,
+)
 
 def get_app_config_dir():
     system = platform.system()
@@ -140,6 +153,7 @@ load_dotenv(
     dotenv_path=ENV_PATH
 )
 
+
 ACR_HOST = os.getenv(
     "ACR_HOST",
     "",
@@ -155,6 +169,14 @@ ACR_ACCESS_SECRET = os.getenv(
     "",
 ).strip()
 
+print("ENV PATH =", ENV_PATH)
+print("ACR HOST =", ACR_HOST)
+print("ACR ACCESS KEY PRESENT =", bool(ACR_ACCESS_KEY))
+print(
+    "ACR ACCESS KEY PREFIX =",
+    ACR_ACCESS_KEY[:6] if ACR_ACCESS_KEY else ""
+)
+init_rights_memory()
 PROJECTS_DB = Path("projects.sqlite3")
 JOBS_DB = Path("jobs.sqlite3")
 JOBS_DIR = Path("cache/jobs")
@@ -192,7 +214,131 @@ init_jobs_db()
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+def extract_acr_rights(track: dict) -> dict:
+    composers = []
+    authors = []
+    publishers = []
+    iswc = ""
 
+    # -----------------------------
+    # ISWC
+    # -----------------------------
+    external_ids = track.get(
+        "external_ids",
+        {}
+    ) or {}
+
+    iswc = str(
+        external_ids.get(
+            "iswc",
+            ""
+        )
+        or ""
+    ).strip()
+
+    # -----------------------------
+    # contributors
+    # -----------------------------
+    contributors = track.get(
+        "contributors",
+        {}
+    ) or {}
+
+    for name in contributors.get(
+        "composers",
+        []
+    ):
+        name = str(name).strip()
+
+        if (
+            name
+            and name not in composers
+        ):
+            composers.append(name)
+
+    for name in contributors.get(
+        "lyricists",
+        []
+    ):
+        name = str(name).strip()
+
+        if (
+            name
+            and name not in authors
+        ):
+            authors.append(name)
+
+    # -----------------------------
+    # works / creators
+    # -----------------------------
+    works = track.get(
+        "works",
+        []
+    ) or []
+
+    for work in works:
+
+        # ISWC éventuellement présent ici
+        if not iswc:
+            iswc = str(
+                work.get(
+                    "iswc",
+                    ""
+                )
+                or work.get(
+                    "id",
+                    ""
+                )
+                or ""
+            ).strip()
+
+        creators = work.get(
+            "creators",
+            []
+        ) or []
+
+        for creator in creators:
+            name = str(
+                creator.get(
+                    "name",
+                    ""
+                )
+            ).strip()
+
+            roles = creator.get(
+                "roles",
+                []
+            ) or []
+
+            roles_upper = {
+                str(role).upper()
+                for role in roles
+            }
+
+            if not name:
+                continue
+
+            if "COMPOSER" in roles_upper:
+                if name not in composers:
+                    composers.append(name)
+
+            if (
+                "LYRICIST" in roles_upper
+                or "AUTHOR" in roles_upper
+            ):
+                if name not in authors:
+                    authors.append(name)
+
+            if "PUBLISHER" in roles_upper:
+                if name not in publishers:
+                    publishers.append(name)
+
+    return {
+        "compositeurs_acr": composers,
+        "auteurs_acr": authors,
+        "editeurs_acr": publishers,
+        "iswc_acr": iswc,
+    }
 def create_job(
     video_path: str,
     mapping_path: str,
@@ -328,98 +474,12 @@ def init_projects_db():
         )
         conn.commit()
 init_projects_db()
-def normalize_cache_value(value: str) -> str:
-    value = str(value or "").strip()
-
-    value = (
-        unicodedata.normalize("NFKD", value)
-        .encode("ascii", "ignore")
-        .decode("ascii")
-    )
-
-    value = value.upper()
-    value = re.sub(r"[^A-Z0-9]+", " ", value)
-
-    return " ".join(value.split())
-
+ 
 import re
 
 
-def clean_title_for_sacem(title: str) -> str:
-    title = str(title or "").strip()
-
-    # Supprimer complètement les parenthèses
-    # Exemple :
-    # Another Love (Piano Version)
-    # -> Another Love
-    title = re.sub(
-        r"\([^)]*\)",
-        " ",
-        title,
-    )
-
-    # Supprimer aussi les crochets
-    title = re.sub(
-        r"\[[^\]]*\]",
-        " ",
-        title,
-    )
-
-    # Supprimer les suffixes fréquents après un tiret
-    title = re.sub(
-        r"\s*-\s*"
-        r"(single version|radio edit|"
-        r"album version|remastered.*|"
-        r"original version|edit|"
-        r"piano version|acoustic|instrumental)"
-        r"\s*$",
-        "",
-        title,
-        flags=re.IGNORECASE,
-    )
-
-    # Nettoyer les espaces
-    title = re.sub(
-        r"\s+",
-        " ",
-        title,
-    ).strip()
-
-    return title
-
-def build_sacem_cache_key(title: str, artist: str) -> str:
-    normalized_title = normalize_cache_value(title)
-    normalized_artist = normalize_cache_value(artist)
-
-    return f"{normalized_title}||{normalized_artist}"
-
-def init_sacem_cache():
-    with sqlite3.connect(SACEM_CACHE_DB) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sacem_cache (
-                cache_key TEXT PRIMARY KEY,
-                title_input TEXT NOT NULL,
-                artist_input TEXT NOT NULL,
-                normalized_title TEXT NOT NULL,
-                normalized_artist TEXT NOT NULL,
-                status TEXT NOT NULL,
-                result_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_sacem_cache_title
-            ON sacem_cache(normalized_title)
-            """
-        )
-
-        conn.commit()
-
+ 
+ 
  
 init_sacem_cache()
  
@@ -481,6 +541,9 @@ class ShiftRequest(BaseModel):
     time_in: str
     time_out: str
 
+class RightsMemoryRequest(BaseModel):
+    row: dict
+
 def normalize_title(value):
     value = str(value or "").lower()
     value = re.sub(r"[^a-z0-9]+", " ", value)
@@ -488,112 +551,86 @@ def normalize_title(value):
 
 SACEM_CACHE_DB = Path("sacem_cache.sqlite3")
 
-def get_sacem_cache(
-    title: str,
-    artist: str,
-):
-    cache_key = build_sacem_cache_key(
-        title,
-        artist,
-    )
+ 
+ 
+ 
+ 
+ 
 
-    with sqlite3.connect(
-        SACEM_CACHE_DB
-    ) as conn:
 
-        row = conn.execute(
-            """
-            SELECT status, result_json
-            FROM sacem_cache
-            WHERE cache_key = ?
-            """,
-            (cache_key,),
-        ).fetchone()
+def export_upper(value) -> str:
+    return str(
+        value or ""
+    ).strip().upper()
 
-    if row is None:
-        return None
 
-    status = str(
-        row[0] or ""
+def format_people_for_export(value) -> str:
+    raw = str(
+        value or ""
     ).strip()
 
-    # Un ancien NOT_FOUND ne doit jamais
-    # empêcher une nouvelle recherche
-    if status != "found":
-        print(
-            "SACEM CACHE IGNORED:",
-            title,
-            artist,
-            status,
-        )
+    if not raw:
+        return ""
 
-        return None
+    people = [
+        part.strip()
+        for part in raw.split(";")
+        if part.strip()
+    ]
 
-    try:
-        return json.loads(row[1])
+    formatted = []
 
-    except Exception:
-        return None
+    for person in people:
+        person = re.sub(
+            r"\s+",
+            " ",
+            person,
+        ).strip()
 
+        if not person:
+            continue
 
-def save_sacem_cache(
-    title: str,
-    artist: str,
-    result: dict,
-):
-    status = str(result.get("status", "")).strip()
+        # Déjà au format NOM, PRENOM
+        if "," in person:
+            parts = [
+                p.strip()
+                for p in person.split(",", 1)
+            ]
 
-    # Ne pas mémoriser les erreurs, blocages ou résultats douteux.
-    if status != "found":
-        return
+            if len(parts) == 2:
+                formatted.append(
+                    f"{parts[0]}, {parts[1]}".upper()
+                )
+                continue
 
-    cache_key = build_sacem_cache_key(title, artist)
-    normalized_title = normalize_cache_value(title)
-    normalized_artist = normalize_cache_value(artist)
-    now = datetime.now(timezone.utc).isoformat()
+        words = person.split()
 
-    with sqlite3.connect(SACEM_CACHE_DB) as conn:
-        conn.execute(
-            """
-            INSERT INTO sacem_cache (
-                cache_key,
-                title_input,
-                artist_input,
-                normalized_title,
-                normalized_artist,
-                status,
-                result_json,
-                created_at,
-                updated_at
+        if len(words) == 1:
+            formatted.append(
+                words[0].upper()
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            continue
 
-            ON CONFLICT(cache_key) DO UPDATE SET
-                title_input = excluded.title_input,
-                artist_input = excluded.artist_input,
-                normalized_title = excluded.normalized_title,
-                normalized_artist = excluded.normalized_artist,
-                status = excluded.status,
-                result_json = excluded.result_json,
-                updated_at = excluded.updated_at
-            """,
-            (
-                cache_key,
-                title,
-                artist,
-                normalized_title,
-                normalized_artist,
-                status,
-                json.dumps(result, ensure_ascii=False),
-                now,
-                now,
-            ),
+        # SACEM peut déjà renvoyer NOM PRENOM
+        if person.isupper():
+            surname = words[0]
+            firstname = " ".join(
+                words[1:]
+            )
+
+        else:
+            # Prenom Nom -> NOM, PRENOM
+            surname = words[-1]
+            firstname = " ".join(
+                words[:-1]
+            )
+
+        formatted.append(
+            f"{surname}, {firstname}".upper()
         )
 
-        conn.commit()
- 
- 
- 
+    return "; ".join(formatted)
+
  
 
 def to_m6_excel_bytes(df: pd.DataFrame) -> bytes:
@@ -612,12 +649,12 @@ def to_m6_excel_bytes(df: pd.DataFrame) -> bytes:
         bottom=Side(style="thin"),
     )
 
-    ws.merge_cells("A1:J1")
+    ws.merge_cells("A1:O1")
     ws["A1"] = "RELEVE DE DROITS D'AUTEUR"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].alignment = Alignment(horizontal="center")
 
-    ws.merge_cells("A2:J2")
+    ws.merge_cells("A2:O2")
     ws["A2"] = "(Merci de nous retourner obligatoirement ce document)"
     ws["A2"].alignment = Alignment(horizontal="center")
 
@@ -634,19 +671,23 @@ def to_m6_excel_bytes(df: pd.DataFrame) -> bytes:
     ws["I8"].fill = yellow
 
     headers = [
-        "Lien associé à la ligne (colonne B)",
-        "TITRE",
-        "N° de produit (si connu)",
-        "GENRE SACEM",
-        "DUREE\n(HH:MM:SS:ii)",
-        "TC IN",
-        "TC OUT",
-        "AUTEUR(S)",
-        "COMPOSITEUR(S)",
-        "EDITEUR(S)",
-        "SOUS-EDITEUR(S)",
-        "ISWC",
-    ]
+    "Lien associé à la ligne (colonne B)",
+    "TITRE",
+    "N° de produit (si connu)",
+    "GENRE SACEM",
+    "DUREE\n(HH:MM:SS:ii)",
+    "TC IN",
+    "TC OUT",
+
+    "AUTEUR(S)",
+    "COMPOSITEUR(S)",
+    "INTERPRETE(S)",
+    "PRODUCTEUR/LABEL",
+    "EDITEUR(S)",
+    "SOUS-EDITEUR(S)",
+    "ISWC",
+    "DISTRIBUTEUR",
+]
 
     start_row = 10
 
@@ -660,19 +701,100 @@ def to_m6_excel_bytes(df: pd.DataFrame) -> bytes:
 
     for r_idx, (_, row) in enumerate(df.iterrows(), start=start_row + 1):
         values = [
+    "",
+
+            # TITRE
+            export_upper(
+                row.get(
+                    "title",
+                    "",
+                )
+            ),
+
             "",
-            row.get("title", ""),
-            "",
-            row.get("genre_sacem", "FDS-Fond sonore"),
-            row.get("duration", ""),
-            row.get("time_in", ""),
-            row.get("time_out", ""),
-            row.get("auteur", ""),
-            row.get("compositeur", ""),
-            row.get("editeur", ""),
-            row.get("sous_editeur", ""),
-            row.get("code_iswc", ""),
-        ]
+
+            # GENRE SACEM
+            export_upper(
+                row.get(
+                    "genre_sacem",
+                    "FDS-Fond sonore",
+                )
+            ),
+
+            # Les timecodes restent tels quels
+            row.get(
+                "duration",
+                "",
+            ),
+            row.get(
+                "time_in",
+                "",
+            ),
+            row.get(
+                "time_out",
+                "",
+            ),
+
+            # Personnes :
+            # NOM, PRENOM; NOM2, PRENOM2
+            format_people_for_export(
+                row.get(
+                    "auteur",
+                    "",
+                )
+            ),
+
+            format_people_for_export(
+                row.get(
+                    "compositeur",
+                    "",
+                )
+            ),
+
+            format_people_for_export(
+                row.get(
+                    "interprete",
+                    "",
+                )
+            ),
+
+            # Sociétés / labels :
+            # tout en majuscules
+            export_upper(
+                row.get(
+                    "label",
+                    "",
+                )
+            ),
+
+            export_upper(
+                row.get(
+                    "editeur",
+                    "",
+                )
+            ),
+
+            export_upper(
+                row.get(
+                    "sous_editeur",
+                    "",
+                )
+            ),
+
+            export_upper(
+                row.get(
+                    "code_iswc",
+                    "",
+                )
+            ),
+
+            export_upper(
+                row.get(
+                    "distributeur",
+                    "",
+                )
+            ),
+]
 
         for col_idx, value in enumerate(values, start=1):
             cell = ws.cell(r_idx, col_idx)
@@ -684,11 +806,22 @@ def to_m6_excel_bytes(df: pd.DataFrame) -> bytes:
                 cell.fill = blue
 
     widths = {
-        "A": 32, "B": 70, "C": 16, "D": 18,
-        "E": 18, "F": 16, "G": 16,
-        "H": 35, "I": 35, "J": 35,
-        "K": 35, "L": 20,
-    }
+    "A": 32,
+    "B": 70,
+    "C": 16,
+    "D": 18,
+    "E": 18,
+    "F": 16,
+    "G": 16,
+    "H": 35,  # Auteur
+    "I": 35,  # Compositeur
+    "J": 35,  # Interprète
+    "K": 35,  # Producteur / Label
+    "L": 35,  # Editeur
+    "M": 35,  # Sous-editeur
+    "N": 20,  # ISWC
+    "O": 35,  # Distributeur
+}
 
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -1083,12 +1216,25 @@ def recognize_chunk(wav_path: str):
     http_uri = "/v1/identify"
     timestamp = str(int(time.time()))
 
-    string_to_sign = f"POST\n{http_uri}\n{ACR_ACCESS_KEY}\naudio\n1\n{timestamp}"
-    signature = acr_sign(string_to_sign.encode(), ACR_ACCESS_SECRET)
+    string_to_sign = (
+        f"POST\n"
+        f"{http_uri}\n"
+        f"{ACR_ACCESS_KEY}\n"
+        f"audio\n"
+        f"1\n"
+        f"{timestamp}"
+    )
+
+    signature = acr_sign(
+        string_to_sign.encode(),
+        ACR_ACCESS_SECRET,
+    )
 
     data = {
         "access_key": ACR_ACCESS_KEY,
-        "sample_bytes": os.path.getsize(wav_path),
+        "sample_bytes": os.path.getsize(
+            wav_path
+        ),
         "timestamp": timestamp,
         "signature": signature,
         "data_type": "audio",
@@ -1099,12 +1245,99 @@ def recognize_chunk(wav_path: str):
         r = requests.post(
             f"https://{ACR_HOST}{http_uri}",
             data=data,
-            files={"sample": f},
+            files={
+                "sample": f,
+            },
             timeout=(20, 40),
         )
 
+    print(
+        "ACR STATUS CODE:",
+        r.status_code,
+    )
+
     r.raise_for_status()
-    return r.json()
+
+    result = r.json()
+
+    # ==========================================
+    # ENRICHIR LES RESULTATS ACR
+    # AVEC LES AYANTS DROIT
+    # ==========================================
+
+    music = (
+        result
+        .get("metadata", {})
+        .get("music", [])
+        or []
+    )
+
+    for track in music:
+        print(
+        "ACR TRACK KEYS:",
+        track.keys()
+    )
+
+        print(
+            "ACR LABEL RAW:",
+            track.get("label")
+        )
+
+        print(
+            "ACR DISTRIBUTORS RAW:",
+            track.get("distributors")
+        )
+        rights = extract_acr_rights(track)
+
+        track["acr_composers"] = rights.get(
+            "compositeurs_acr",
+            []
+        )
+
+        track["acr_authors"] = rights.get(
+            "auteurs_acr",
+            []
+        )
+
+        track["acr_publishers"] = rights.get(
+            "editeurs_acr",
+            []
+        )
+
+        track["acr_iswc"] = rights.get(
+            "iswc_acr",
+            ""
+        )
+        track["acr_label"] = str(
+        track.get("label", "")
+        or ""
+        ).strip()
+
+        track["acr_distributors"] = [
+            str(d).strip()
+            for d in (
+                track.get("distributors")
+                or []
+            )
+            if str(d).strip()
+        ]
+
+        track["acr_performers"] = [
+            str(a.get("name", "")).strip()
+            for a in (
+                track.get("artists")
+                or []
+            )
+            if str(a.get("name", "")).strip()
+        ]
+        
+        print(
+            "ACR RIGHTS:",
+            track.get("title"),
+            rights,
+        )
+
+    return result
 
 def analyze_acr_chunk(
     chunk_path: str,
@@ -1175,16 +1408,52 @@ def analyze_acr_chunk(
         return []
 
     return [
-        {
-            "title": title,
-            "artist": artist,
-            "source": source,
-            "start_sec": start,
-            "end_sec": start + chunk_duration,
-            "score": score,
-        }
-    ]
+    {
+        "title": title,
+        "artist": artist,
+        "source": source,
+        "start_sec": start,
+        "end_sec": start + chunk_duration,
+        "score": score,
+        
 
+        # Ayants droit ACRCloud
+        "acr_authors": item.get(
+            "acr_authors",
+            [],
+        ),
+
+        "acr_composers": item.get(
+            "acr_composers",
+            [],
+        ),
+
+        "acr_publishers": item.get(
+            "acr_publishers",
+            [],
+        ),
+
+        "acr_iswc": item.get(
+            "acr_iswc",
+            "",
+        ),
+        "acr_label": item.get(
+            "acr_label",
+            ""
+        ),
+
+        "acr_distributors": item.get(
+            "acr_distributors",
+            []
+        ),
+
+        "acr_performers": item.get(
+            "acr_performers",
+            []
+        ),
+    }
+]
+    
 def extract_audio(video_path: str, wav_path: str):
     subprocess.check_call([
         get_ffmpeg_path(), "-y",
@@ -1421,447 +1690,125 @@ def merge_repeated_titles(rows):
         merged.append(row)
 
     return merged
+ 
 
+ 
 
-def enrich_sacem_sync(rows: list) -> list:
-    """
-    Enrichit les lignes avec les informations SACEM.
-
-    - Utilise le cache si disponible.
-    - Nettoie le titre avant recherche SACEM.
-    - Retente avec le titre seul si nécessaire.
-    - Met en cache uniquement les résultats "found".
-    - Conserve les anciennes données si la SACEM
-      est bloquée ou rencontre une erreur.
-    """
-
-    is_server_linux = (
-        platform.system() == "Linux"
+def run_sacem_job(job_id: str):
+    print(
+        "SACEM THREAD:",
+        threading.current_thread().name,
     )
+    job = get_job(job_id)
 
-    agent = SacemAgent(
-    headless=is_server_linux
-)
-    enriched = []
+    if job is None:
+        return
 
-    for position, row in enumerate(rows):
-        print("ROW =", row)
+    try:
+        parameters = job["parameters"]
 
-        # Copie de la ligne existante.
-        # Important : cela permet de conserver les anciennes
-        # informations SACEM si la nouvelle recherche échoue.
-        new_row = dict(row)
-
-        title = str(
-            new_row.get("title", "")
-        ).strip()
-
-        artist = str(
-            new_row.get("artist", "")
-            or new_row.get("artiste", "")
-        ).strip()
-
-        # ----------------------------------------
-        # 1. Titre vide
-        # ----------------------------------------
-        if not title:
-            new_row["statut_sacem"] = "titre vide"
-            enriched.append(new_row)
-            continue
-
-        # ----------------------------------------
-        # 2. Titres internes à ignorer
-        # ----------------------------------------
-        internal_titles = (
-            "GENERIQUE",
-            "GÉNÉRIQUE",
-            "JINGLE",
-            "NAPPE",
-            "MDP ",
+        rows = parameters.get(
+            "rows",
+            [],
         )
 
-        if title.upper().startswith(
-            internal_titles
+        total = len(rows)
+
+        update_job(
+            job_id,
+            status="running",
+            progress=0,
+            current_chunk=0,
+            total_chunks=total,
+            message="Préparation SACEM",
+        )
+
+        def report_progress(
+            current,
+            total_rows,
         ):
-            new_row["statut_sacem"] = (
-                "ignoré - titre interne"
+            progress = round(
+                current
+                / max(total_rows, 1)
+                * 100
             )
 
-            enriched.append(new_row)
-            continue
-
-        try:
-            # ----------------------------------------
-            # 3. Recherche dans le cache
-            # ----------------------------------------
-            res = get_sacem_cache(
-                title,
-                artist,
+            update_job(
+                job_id,
+                progress=progress,
+                current_chunk=current,
+                total_chunks=total_rows,
+                message=(
+                    f"Recherche SACEM "
+                    f"{current}/{total_rows}"
+                ),
             )
 
-            if res is not None:
-                print(
-                    "SACEM CACHE HIT:",
-                    title,
-                    artist,
-                )
+        enriched = enrich_sacem_sync(
+            rows,
+            progress_callback=report_progress,
+        )
 
-                source_sacem = "cache"
+        result = {
+            "rows": enriched,
+        }
 
-            else:
-                print(
-                    "SACEM CACHE MISS:",
-                    title,
-                    artist,
-                )
+        update_job(
+            job_id,
+            status="done",
+            progress=100,
+            current_chunk=total,
+            total_chunks=total,
+            message="Enrichissement SACEM terminé",
+            result_json=json.dumps(
+                result,
+                ensure_ascii=False,
+            ),
+        )
 
-                source_sacem = "sacem"
+    except Exception as exc:
+        error_text = (
+            f"{type(exc).__name__}: {exc}\n"
+            f"{traceback.format_exc()}"
+        )
 
-                # ----------------------------------------
-                # 4. Nettoyage du titre
-                # ----------------------------------------
-                sacem_title = clean_title_for_sacem(
-                    title
-                )
+        update_job(
+            job_id,
+            status="error",
+            message="Erreur pendant l’enrichissement SACEM",
+            error=error_text,
+        )
 
-                print(
-                    "SACEM TITLE:",
-                    repr(title),
-                    "->",
-                    repr(sacem_title),
-                )
+@app.post("/enrich-sacem/start")
+async def start_enrich_sacem(
+    rows_json: str = Form(...),
+):
+    rows = json.loads(
+        rows_json
+    )
 
-                # ----------------------------------------
-                # 5. Recherche :
-                # titre nettoyé + artiste
-                # ----------------------------------------
-                res = agent.search(
-                    sacem_title,
-                    artist,
-                )
+    job_id = create_job(
+        video_path="",
+        mapping_path="",
+        parameters={
+            "type": "sacem",
+            "rows": rows,
+        },
+    )
 
-                # ----------------------------------------
-                # 6. Si pas trouvé :
-                # titre nettoyé seul
-                # ----------------------------------------
-                if (
-                    res.get("status")
-                    == "not_found"
-                ):
-                    print(
-                        "SACEM RETRY TITLE ONLY:",
-                        sacem_title,
-                    )
+    thread = threading.Thread(
+        target=run_sacem_job,
+        args=(job_id,),
+        daemon=True,
+        name=f"sacem-{job_id[:8]}",
+    )
 
-                    res = agent.search(
-                        sacem_title,
-                        "",
-                    )
+    thread.start()
 
-                # ----------------------------------------
-                # 7. Cache uniquement les FOUND
-                # ----------------------------------------
-                if (
-                    res.get("status")
-                    == "found"
-                ):
-                    save_sacem_cache(
-                        title,
-                        artist,
-                        res,
-                    )
-
-            print(
-                "SACEM RESULT:",
-                res,
-            )
-
-            print(
-                "SACEM SOURCE:",
-                source_sacem,
-            )
-
-            # ----------------------------------------
-            # 8. SACEM BLOQUÉE
-            # ----------------------------------------
-            if (
-                res.get("status")
-                == "blocked"
-            ):
-                print(
-                    "SACEM BLOQUEE - "
-                    "conservation des anciennes données"
-                )
-
-                # Vérifier si cette ligne possédait
-                # déjà des informations SACEM.
-                has_old_sacem_data = bool(
-                    new_row.get("compositeur")
-                    or new_row.get("auteur")
-                    or new_row.get("editeur")
-                    or new_row.get("code_iswc")
-                    or new_row.get(
-                        "url_sacem_detail"
-                    )
-                    or new_row.get(
-                        "url_sacem_candidate"
-                    )
-                )
-
-                if has_old_sacem_data:
-                    # --------------------------------
-                    # NE PAS écraser les anciennes infos
-                    # --------------------------------
-
-                    old_status = str(
-                        row.get(
-                            "statut_sacem",
-                            "",
-                        )
-                    ).strip()
-
-                    # Si l'ancien résultat était trouvé,
-                    # on conserve FOUND.
-                    if old_status == "found":
-                        new_row[
-                            "statut_sacem"
-                        ] = "found"
-
-                    # Sinon on conserve son ancien statut.
-                    elif old_status:
-                        new_row[
-                            "statut_sacem"
-                        ] = old_status
-
-                    else:
-                        new_row[
-                            "statut_sacem"
-                        ] = "à vérifier"
-
-                    new_row[
-                        "source_sacem"
-                    ] = (
-                        row.get(
-                            "source_sacem"
-                        )
-                        or
-                        "ancien résultat conservé"
-                    )
-
-                else:
-                    # Aucun ancien résultat disponible.
-                    new_row[
-                        "statut_sacem"
-                    ] = "blocked"
-
-                    new_row[
-                        "source_sacem"
-                    ] = "sacem"
-
-                enriched.append(new_row)
-
-                # SACEM vient de bloquer l'accès.
-                # On arrête immédiatement les recherches.
-                #
-                # Les autres lignes sont conservées
-                # EXACTEMENT telles qu'elles étaient.
-                for remaining in (
-                    rows[position + 1:]
-                ):
-                    enriched.append(
-                        dict(remaining)
-                    )
-
-                break
-
-            # ----------------------------------------
-            # 9. Copier le nouveau résultat SACEM
-            # ----------------------------------------
-
-            new_row[
-                "statut_sacem"
-            ] = res.get(
-                "status",
-                "",
-            )
-
-            new_row[
-                "compositeur"
-            ] = "; ".join(
-                res.get(
-                    "composers",
-                    [],
-                )
-            )
-
-            new_row[
-                "auteur"
-            ] = "; ".join(
-                res.get(
-                    "authors",
-                    [],
-                )
-            )
-
-            new_row[
-                "editeur"
-            ] = "; ".join(
-                res.get(
-                    "publishers",
-                    [],
-                )
-            )
-
-            new_row[
-                "sous_editeur"
-            ] = "; ".join(
-                res.get(
-                    "sub_publishers",
-                    [],
-                )
-            )
-
-            new_row[
-                "interprete"
-            ] = "; ".join(
-                res.get(
-                    "performers",
-                    [],
-                )
-            )
-
-            new_row[
-                "code_iswc"
-            ] = res.get(
-                "iswc",
-                "",
-            )
-
-            # ----------------------------------------
-            # 10. URLs SACEM
-            # ----------------------------------------
-
-            # Fiche SACEM acceptée
-            new_row[
-                "url_sacem_detail"
-            ] = res.get(
-                "url",
-                "",
-            )
-
-            # Fiche candidate :
-            # résultat trouvé mais matching insuffisant
-            new_row[
-                "url_sacem_candidate"
-            ] = res.get(
-                "candidate_url",
-                "",
-            )
-
-            # URL de la recherche SACEM
-            search_url = res.get(
-                "search_url",
-                "",
-            )
-
-            # Si l'agent n'a pas retourné
-            # l'URL de recherche, on la construit.
-            if not search_url:
-                query = title
-
-                if artist:
-                    query = (
-                        f"{title},{artist}"
-                    )
-
-                search_url = (
-                    "https://www."
-                    "repertoire.sacem.fr/"
-                    "resultats?"
-                    "filters=titles,parties"
-                    f"&query={quote(query)}"
-                    "#searchBtn"
-                )
-
-            new_row[
-                "url_sacem"
-            ] = search_url
-
-            new_row[
-                "source_sacem"
-            ] = source_sacem
-
-        # ----------------------------------------
-        # 11. ERREUR SACEM
-        # ----------------------------------------
-        except Exception as exc:
-            print(
-                "SACEM ERROR:",
-                repr(exc),
-            )
-
-            # Vérifier si nous possédions déjà
-            # des informations SACEM.
-            has_old_sacem_data = bool(
-                new_row.get("compositeur")
-                or new_row.get("auteur")
-                or new_row.get("editeur")
-                or new_row.get("code_iswc")
-                or new_row.get(
-                    "url_sacem_detail"
-                )
-                or new_row.get(
-                    "url_sacem_candidate"
-                )
-            )
-
-            if has_old_sacem_data:
-                # --------------------------------
-                # Conserver les anciennes données
-                # --------------------------------
-                print(
-                    "Anciennes données SACEM "
-                    "conservées"
-                )
-
-                new_row[
-                    "source_sacem"
-                ] = (
-                    new_row.get(
-                        "source_sacem"
-                    )
-                    or
-                    "ancien résultat conservé"
-                )
-
-            else:
-                # --------------------------------
-                # Aucun ancien résultat
-                # --------------------------------
-                new_row[
-                    "statut_sacem"
-                ] = (
-                    f"error: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                )
-
-                new_row[
-                    "url_sacem"
-                ] = ""
-
-                new_row[
-                    "url_sacem_detail"
-                ] = ""
-
-                new_row[
-                    "url_sacem_candidate"
-                ] = ""
-
-        enriched.append(new_row)
-
-    return enriched
-
+    return {
+        "job_id": job_id,
+        "status": "pending",
+    }
 @app.post("/enrich-sacem")
 async def enrich_sacem(
     rows_json: str = Form(...),
@@ -1995,12 +1942,37 @@ async def analyze_acr(
     mapping: UploadFile | None = File(None),
     intro_type: str = Form("NONE"),
     clean_audio: str = Form("NO"),
+    edl: UploadFile | None = File(None),
 ):
+    edl_rows = []
     tmp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
 
     with open(tmp_video, "wb") as f:
         f.write(await video.read())
     print("VIDEO SIZE:", os.path.getsize(tmp_video))
+    if edl is not None:
+        edl_bytes = await edl.read()
+
+        edl_text = edl_bytes.decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+        edl_rows = parse_edl_text(
+            edl_text,
+            fps=25.0,
+            timeline_base_tc="10:00:00:00",
+        )
+
+        print(
+            "EDL ROWS:",
+            len(edl_rows),
+        )
+
+        print(
+            "EDL SAMPLE:",
+            edl_rows[:3],
+        )
 
     mapping_path = None
     if mapping is not None and mapping.filename:
@@ -2141,15 +2113,58 @@ async def analyze_acr(
 
         acr_rows.append({
             "index": len(acr_rows),
-            "title": map_acr_title(h["title"], mapping_dict),
-            "artist": h.get("artist", ""),
-            "acr_title": h["title"],
+            "title": final_title,
+
+            "artist": str(
+                h.get("artist", "")
+            ).strip(),
+
+            "acr_title": original_title,
+
             "time_in": sec_to_timecode(start),
             "time_out": sec_to_timecode(end),
-            "duration": sec_to_timecode(end - start),
+
+            "duration": sec_to_timecode(
+                end - start
+            ),
+
             "start_sec": start,
             "end_sec": end,
+
             "score": h.get("score", ""),
+
+            # =========================
+            # AYANTS DROIT ACRCLOUD
+            # =========================
+
+            "auteur": "; ".join(
+                h.get("acr_authors", [])
+            ),
+
+            "compositeur": "; ".join(
+                h.get("acr_composers", [])
+            ),
+
+            "editeur": "; ".join(
+                h.get("acr_publishers", [])
+            ),
+
+            "code_iswc": h.get(
+                "acr_iswc",
+                ""
+            ),
+
+            "source_droits": (
+                "ACRCloud"
+                if (
+                    h.get("acr_authors")
+                    or h.get("acr_composers")
+                    or h.get("acr_publishers")
+                    or h.get("acr_iswc")
+                )
+                else ""
+            ),
+
             "source": "ACRCloud seul",
         })
     acr_rows = merge_repeated_titles(acr_rows)
@@ -2158,6 +2173,11 @@ async def analyze_acr(
     acr_rows,
     intro_type=intro_type,
 )
+    if edl_rows:
+        acr_rows = merge_edl_with_acr(
+            acr_rows,
+            edl_rows,
+        )
     acr_rows = merge_repeated_titles(acr_rows)
     try:
          os.remove(tmp_video)
@@ -2351,22 +2371,75 @@ def build_acr_rows(
         )
 
         acr_rows.append({
-            "index": len(acr_rows),
-            "title": final_title,
-            "artist": str(
-                hit.get("artist", "")
-            ).strip(),
-            "acr_title": original_title,
-            "time_in": sec_to_timecode(start),
-            "time_out": sec_to_timecode(end),
-            "duration": sec_to_timecode(
-                end - start
-            ),
-            "start_sec": start,
-            "end_sec": end,
-            "score": hit.get("score", ""),
-            "source": "ACRCloud seul",
-        })
+    "index": len(acr_rows),
+    "title": final_title,
+
+    "artist": str(
+        hit.get("artist", "")
+    ).strip(),
+
+    "acr_title": original_title,
+
+    "time_in": sec_to_timecode(start),
+    "time_out": sec_to_timecode(end),
+
+    "duration": sec_to_timecode(
+        end - start
+    ),
+
+    "start_sec": start,
+    "end_sec": end,
+
+    "score": hit.get("score", ""),
+
+    # Ayants droit ACRCloud
+    "auteur": "; ".join(
+        hit.get("acr_authors", [])
+    ),
+
+    "compositeur": "; ".join(
+        hit.get("acr_composers", [])
+    ),
+
+    "editeur": "; ".join(
+        hit.get("acr_publishers", [])
+    ),
+    "interprete": "; ".join(
+    hit.get(
+        "acr_performers",
+        []
+    )
+    ),
+
+    "label": hit.get(
+        "acr_label",
+        ""
+    ),
+
+    "distributeur": "; ".join(
+        hit.get(
+            "acr_distributors",
+            []
+        )
+    ),
+    "code_iswc": hit.get(
+        "acr_iswc",
+        ""
+    ),
+
+    "source_droits": (
+        "ACRCloud"
+        if (
+            hit.get("acr_authors")
+            or hit.get("acr_composers")
+            or hit.get("acr_publishers")
+            or hit.get("acr_iswc")
+        )
+        else ""
+    ),
+
+    "source": "ACRCloud seul",
+})
 
     # Fusion des répétitions
     acr_rows = merge_repeated_titles(
@@ -2407,6 +2480,43 @@ def run_acr_job(job_id: str):
         video_path = job["video_path"]
         mapping_path = job["mapping_path"]
         parameters = job["parameters"]
+        edl_path = str(
+            parameters.get(
+                "edl_path",
+                "",
+            )
+            or ""
+        ).strip()
+
+        edl_rows = []
+
+        if edl_path and Path(edl_path).exists():
+
+            edl_text = Path(
+                edl_path
+            ).read_text(
+                encoding="utf-8",
+                errors="ignore",
+            )
+
+            edl_rows = parse_edl_text(
+                edl_text,
+                fps=25.0,
+                timeline_base_tc="10:00:00:00",
+            )
+
+            print(
+                "EDL ROWS:",
+                len(edl_rows),
+            )
+
+            print(
+                "EDL SAMPLE:",
+                edl_rows[:3],
+            )
+        else:
+            print("NO EDL FOR THIS JOB")
+        
 
         total_duration = get_duration(video_path)
 
@@ -2549,6 +2659,11 @@ def run_acr_job(job_id: str):
                 "NONE",
             ),
         )
+        if edl_rows:
+            rows = merge_edl_with_acr(
+                rows,
+                edl_rows,
+            )
 
         result = {
             "rows": rows,
@@ -2653,189 +2768,6 @@ def shift_rows(req: ShiftRequest):
         cursor += old_duration
 
     return {"rows": rows}
- 
-def search(self, title: str, artist: str = "") -> dict:
-    title = str(title).strip()
-    artist = str(artist).strip()
-
-    with sync_playwright() as p:
-                
-
-        CHROMIUM_PATHS = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/opt/homebrew/bin/chromium",
-        ]
-
-        chromium_executable = next(
-            (
-                path
-                for path in CHROMIUM_PATHS
-                if os.path.exists(path)
-            ),
-            None,
-        )
-
-        if chromium_executable:
-            browser = p.chromium.launch(
-                headless=True,
-                executable_path=chromium_executable,
-            )
-        else:
-            browser = p.chromium.launch(
-                headless=True,
-            )
-
-        context = browser.new_context(
-        viewport={"width": 1450, "height": 900},
-        locale="fr-FR",
-    )
-
-        page = context.new_page()
-
-        try:
-            body_text = self._run_search(page, title, artist)
-
-            if self._is_blocked(body_text):
-                return {
-                    "status": "blocked",
-                    "title_input": title,
-                    "artist_input": artist,
-                    "search_mode": "title_artist",
-                    "url": page.url,
-                    "raw_text": body_text[:2000],
-                }
-
-            search_url = page.url
-            search_mode = "title_artist"
-
-            if not self._has_results(body_text):
-                body_text = self._run_search(page, title, "")
-
-                if self._is_blocked(body_text):
-                    return {
-                        "status": "blocked",
-                        "title_input": title,
-                        "artist_input": artist,
-                        "search_mode": "title_only_fallback",
-                        "url": page.url,
-                        "raw_text": body_text[:2000],
-                    }
-
-                search_mode = "title_only_fallback"
-                search_url = page.url
-
-            detail_links = page.get_by_text(
-                "VOIR LE DÉTAIL",
-                exact=True,
-            )
-
-            count = detail_links.count()
-
-            if count == 0:
-                return {
-                    "status": "not_found",
-                    "title_input": title,
-                    "artist_input": artist,
-                    "search_mode": search_mode,
-                    "url": "",
-                    "raw_text": body_text[:2000],
-                }
-
-            selected_index = self._choose_result_index_from_page(
-                page,
-                title,
-                artist if search_mode == "title_artist" else "",
-            )
-
-            if selected_index >= count:
-                selected_index = 0
-
-            selected_link = detail_links.nth(selected_index)
-
-            selected_link.scroll_into_view_if_needed()
-
-            selected_link.click(
-                timeout=10000,
-                force=True,
-            )
-
-            try:
-                page.wait_for_url(
-                    "**/detail-oeuvre/**",
-                    timeout=10000,
-                )
-            except Exception:
-                pass
-
-            page.wait_for_timeout(2000)
-
-            current_url = page.url
-
-            if "/detail-oeuvre/" not in current_url:
-                return {
-                    "status": "not_found",
-                    "title": "",
-                    "iswc": "",
-                    "authors": [],
-                    "composers": [],
-                    "publishers": [],
-                    "sub_publishers": [],
-                    "performers": [],
-                    "url": "",
-                    "artist_input": artist,
-                    "title_input": title,
-                    "search_mode": search_mode,
-                    "result_count": count,
-                    "selected_result_index": selected_index,
-                    "search_url": search_url,
-                }
-
-            current_title = page.title()
-            detail_text = page.locator("body").inner_text()
-
-            parsed = parse_sacem_detail(detail_text)
-
-            returned_title = parsed.get("title", "")
-            title_score = fuzz.ratio(
-                normalize_key(title),
-                normalize_key(returned_title),
-            )
-
-            parsed["title_match_score"] = title_score
-
-            if title_score < 85:
-                parsed["status"] = "not_found"
-                parsed["candidate_url"] = current_url
-                parsed["url"] = ""
-
-            else:
-                parsed["status"] = "found"
-                parsed["url"] = current_url
-                parsed["candidate_url"] = ""
-
-            print(
-                "SACEM DETAIL URL:",
-                current_url,
-            )
-
-            print(
-                "SACEM CANDIDATE URL:",
-                parsed.get("candidate_url", ""),
-            )
-            
-            parsed["artist_input"] = artist
-            parsed["title_input"] = title
-            parsed["search_mode"] = search_mode
-            parsed["page_title"] = current_title
-            parsed["result_count"] = count
-            parsed["selected_result_index"] = selected_index
-            parsed["search_url"] = search_url
-
-            return parsed
-
-        finally:
-            browser.close()
 
 @app.post("/download-m6")
 async def download_m6(rows_json: str = Form(...)):
@@ -2858,6 +2790,7 @@ async def start_analyze_acr(
     background_tasks: BackgroundTasks,
     video: UploadFile = File(...),
     mapping: UploadFile | None = File(None),
+    edl: UploadFile | None = File(None),
     conductor_type: str = Form("Lundi-Jeudi"),
     intro_type: str = Form("NONE"),
     clean_audio: str = Form("NO"),
@@ -2874,36 +2807,90 @@ async def start_analyze_acr(
     video_path = job_dir / f"video{video_suffix}"
 
     with video_path.open("wb") as destination:
-        while chunk := await video.read(1024 * 1024):
+        while chunk := await video.read(
+            1024 * 1024
+        ):
             destination.write(chunk)
 
     mapping_path = ""
 
     if mapping is not None:
         mapping_suffix = (
-            Path(mapping.filename or "mapping.xlsx").suffix
+            Path(
+                mapping.filename
+                or "mapping.xlsx"
+            ).suffix
             or ".xlsx"
         )
 
         mapping_file = (
-            job_dir / f"mapping{mapping_suffix}"
+            job_dir
+            / f"mapping{mapping_suffix}"
         )
 
-        with mapping_file.open("wb") as destination:
+        with mapping_file.open(
+            "wb"
+        ) as destination:
             while chunk := await mapping.read(
                 1024 * 1024
             ):
                 destination.write(chunk)
 
-        mapping_path = str(mapping_file)
+        mapping_path = str(
+            mapping_file
+        )
+
+    # =====================================
+    # EDL
+    # =====================================
+
+    edl_path = ""
+
+    if (
+        edl is not None
+        and edl.filename
+    ):
+        edl_suffix = (
+            Path(edl.filename).suffix
+            or ".txt"
+        )
+
+        edl_file = (
+            job_dir
+            / f"timeline{edl_suffix}"
+        )
+
+        with edl_file.open(
+            "wb"
+        ) as destination:
+            while chunk := await edl.read(
+                1024 * 1024
+            ):
+                destination.write(chunk)
+
+        edl_path = str(
+            edl_file
+        )
+
+        print(
+            "EDL FILE SAVED:",
+            edl_path,
+        )
 
     parameters = {
-        "conductor_type": conductor_type,
-        "intro_type": intro_type,
-        "clean_audio": clean_audio,
+        "conductor_type":
+            conductor_type,
+        "intro_type":
+            intro_type,
+        "clean_audio":
+            clean_audio,
+        "edl_path":
+            edl_path,
     }
 
     now = utc_now()
+
+    # ... garde la suite identique
 
     with sqlite3.connect(JOBS_DB) as conn:
         conn.execute(
@@ -3045,6 +3032,20 @@ def delete_project(project_id: int):
     return {
         "ok": True,
         "project_id": project_id,
+    }
+
+@app.post("/rights-memory")
+def save_rights_memory_endpoint(
+    payload: RightsMemoryRequest,
+):
+    ok = save_rights_memory(
+        payload.row
+    )
+
+    return {
+        "status": "ok"
+        if ok
+        else "ignored"
     }
 
 if __name__ == "__main__":

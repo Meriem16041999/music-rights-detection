@@ -1,4 +1,9 @@
-import { useRef, useState, useEffect } from "react";
+import {
+  useRef,
+  useState,
+  useEffect,
+  useCallback,
+} from "react";
 import axios from "axios";
 import "./App.css";
 import HistoryPage from "./HistoryPage";
@@ -21,6 +26,7 @@ function App() {
   const [conductorType, setConductorType] = useState("Lundi-Jeudi");
   const waveformRef = useRef(null);
   const [cleanAudio, setCleanAudio] = useState(false);
+  const [edlFile, setEdlFile] = useState(null);
  
   const [currentTime, setCurrentTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -49,23 +55,191 @@ function App() {
   const [totalChunks, setTotalChunks] =
     useState(0);
   const [jobError, setJobError] = useState("");
- useEffect(() => {
-  if (!jobId) {
+  const [sacemJobId, setSacemJobId] =
+  useState(null);
+
+  const [sacemJobStatus, setSacemJobStatus] =
+    useState("idle");
+
+  const [sacemProgress, setSacemProgress] =
+    useState(0);
+
+  const [sacemCurrent, setSacemCurrent] =
+    useState(0);
+
+  const [sacemTotal, setSacemTotal] =
+    useState(0);
+
+  const [sacemMessage, setSacemMessage] =
+    useState("");
+
+  const [sacemError, setSacemError] =
+    useState("");
+// ==============================
+// POLLING ACR
+// ==============================
+useEffect(() => {
+  const handleDeleteKey = (event) => {
+    if (
+      event.key !== "Delete" &&
+      event.key !== "Backspace"
+    ) {
+      return;
+    }
+
+    // Ne pas supprimer le bloc si on écrit
+    // dans un champ texte
+    const activeElement =
+      document.activeElement;
+
+    const tagName =
+      activeElement
+        ?.tagName
+        ?.toLowerCase();
+
+    if (
+      tagName === "input" ||
+      tagName === "textarea" ||
+      activeElement?.isContentEditable
+    ) {
+      return;
+    }
+
+    // Aucun bloc sélectionné
+    if (selectedIndex === null) {
+      return;
+    }
+
+    event.preventDefault();
+
+    setRows((prev) =>
+      prev.filter(
+        (_, index) =>
+          index !== selectedIndex
+      )
+    );
+
+    setSelectedIndex(null);
+  };
+
+  window.addEventListener(
+    "keydown",
+    handleDeleteKey
+  );
+
+  return () => {
+    window.removeEventListener(
+      "keydown",
+      handleDeleteKey
+    );
+  };
+}, [selectedIndex]);
+
+  useEffect(() => {
+    if (!jobId) {
+      return;
+    }
+
+    let stopped = false;
+    let timer = null;
+
+    const pollJob = async () => {
+      try {
+        const response = await fetch(
+          `${API}/jobs/${jobId}`
+        );
+
+        if (!response.ok) {
+          throw new Error(
+            "Impossible de récupérer le statut du job"
+          );
+        }
+
+        const job = await response.json();
+
+        if (stopped) {
+          return;
+        }
+
+        setJobStatus(job.status || "idle");
+        setProgress(job.progress || 0);
+        setProgressMessage(job.message || "");
+        setCurrentChunk(job.current_chunk || 0);
+        setTotalChunks(job.total_chunks || 0);
+
+        if (job.status === "done") {
+          setRows(job.result?.rows || []);
+          setAcrHits(job.result?.acr_hits || []);
+          setVideoDuration(
+            job.result?.video_duration || 0
+          );
+
+          setProgress(100);
+          setLoading(false);
+
+          return;
+        }
+
+        if (
+          job.status === "error" ||
+          job.status === "cancelled"
+        ) {
+          setLoading(false);
+          setJobError(job.error || "");
+
+          return;
+        }
+
+        timer = window.setTimeout(
+          pollJob,
+          1000
+        );
+      } catch (error) {
+        console.error(
+          "POLLING ERROR:",
+          error
+        );
+
+        if (!stopped) {
+          timer = window.setTimeout(
+            pollJob,
+            3000
+          );
+        }
+      }
+    };
+
+    pollJob();
+
+    return () => {
+      stopped = true;
+
+      if (timer) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [jobId]);
+  
+  // ==============================
+// POLLING SACEM
+// ==============================
+useEffect(() => {
+  if (!sacemJobId) {
     return;
   }
 
   let stopped = false;
   let timer = null;
 
-  const pollJob = async () => {
+  const pollSacemJob = async () => {
     try {
       const response = await fetch(
-        `${API}/jobs/${jobId}`
+        `${API}/jobs/${sacemJobId}`
       );
 
       if (!response.ok) {
         throw new Error(
-          "Impossible de récupérer le statut du job"
+          "Impossible de récupérer le statut SACEM"
         );
       }
 
@@ -75,20 +249,15 @@ function App() {
         return;
       }
 
-      setJobStatus(job.status || "idle");
-      setProgress(job.progress || 0);
-      setProgressMessage(job.message || "");
-      setCurrentChunk(job.current_chunk || 0);
-      setTotalChunks(job.total_chunks || 0);
+      setSacemJobStatus(job.status || "idle");
+      setSacemProgress(job.progress || 0);
+      setSacemCurrent(job.current_chunk || 0);
+      setSacemTotal(job.total_chunks || 0);
+      setSacemMessage(job.message || "");
 
       if (job.status === "done") {
         setRows(job.result?.rows || []);
-        setAcrHits(job.result?.acr_hits || []);
-        setVideoDuration(
-          job.result?.video_duration || 0
-        );
-
-        setLoading(false);
+        setSacemProgress(100);
         return;
       }
 
@@ -96,39 +265,115 @@ function App() {
         job.status === "error" ||
         job.status === "cancelled"
       ) {
-        setLoading(false);
-        setJobError(job.error || "");
+        setSacemError(
+          job.error || "Erreur SACEM"
+        );
         return;
       }
 
       timer = window.setTimeout(
-        pollJob,
+        pollSacemJob,
         1000
       );
     } catch (error) {
-      console.error("POLLING ERROR:", error);
+      console.error(
+        "SACEM POLLING ERROR:",
+        error
+      );
 
       if (!stopped) {
         timer = window.setTimeout(
-          pollJob,
+          pollSacemJob,
           3000
         );
       }
     }
   };
 
-  pollJob();
+  pollSacemJob();
 
   return () => {
     stopped = true;
-    
 
     if (timer) {
       window.clearTimeout(timer);
     }
   };
-}, [jobId]);
+}, [sacemJobId]);
+
  
+
+const getRightsStatus = (row) => {
+  const sacemStatus = String(
+    row?.statut_sacem || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  const manualStatus = String(
+    row?.statut_validation || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  // 1. SACEM trouvé = TOUJOURS VERT
+  if (sacemStatus === "found") {
+    return "validated";
+  }
+
+  // 2. Validation manuelle = VERT
+  if (manualStatus === "validated") {
+    return "validated";
+  }
+
+  const auteur = Boolean(
+    row.auteur?.trim()
+  );
+
+  const compositeur = Boolean(
+    row.compositeur?.trim()
+  );
+
+  const editeur = Boolean(
+    row.editeur?.trim()
+  );
+
+  const iswc = Boolean(
+    row.code_iswc?.trim()
+  );
+
+  // 3. Conflit / à vérifier
+  if (
+    manualStatus === "review" ||
+    sacemStatus === "à vérifier" ||
+    row.source_sacem ===
+      "résultat SACEM rejeté"
+  ) {
+    return "review";
+  }
+
+  // 4. ACR suffisamment complet
+  if (
+    iswc &&
+    (auteur || compositeur) &&
+    editeur
+  ) {
+    return "validated";
+  }
+
+  // 5. Données partielles
+  if (
+    auteur ||
+    compositeur ||
+    editeur ||
+    iswc
+  ) {
+    return "partial";
+  }
+
+  // 6. Rien encore
+  return "pending";
+};
  
 function secondsToTimecode(sec) {
   sec = Math.max(0, Math.round(Number(sec) || 0));
@@ -206,8 +451,9 @@ function getProjectQualitySummary() {
   };
 
   rows.forEach((row) => {
-    const status =
-      getQualityStatus(row);
+    const status = getRightsStatus(row);
+
+   
 
     if (
       status.code === "validated"
@@ -258,10 +504,28 @@ function getProjectQualitySummary() {
   };
 }
 function getQualityStatus(row) {
-  const manualStatus = String(
-    row.statut_validation || ""
-  );
+  const sacemStatus = String(
+    row?.statut_sacem || ""
+  )
+    .trim()
+    .toLowerCase();
 
+  const manualStatus = String(
+    row?.statut_validation || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  // PRIORITÉ ABSOLUE :
+  // trouvé SACEM = VERT
+  if (sacemStatus === "found") {
+    return {
+      code: "validated",
+      label: "Validé SACEM",
+    };
+  }
+
+  // Validation manuelle = VERT
   if (manualStatus === "validated") {
     return {
       code: "validated",
@@ -269,6 +533,7 @@ function getQualityStatus(row) {
     };
   }
 
+  // À vérifier
   if (manualStatus === "review") {
     return {
       code: "review",
@@ -276,10 +541,7 @@ function getQualityStatus(row) {
     };
   }
 
-  const sacemStatus = String(
-    row.statut_sacem || ""
-  );
-
+  // SACEM non trouvé / erreur
   if (
     sacemStatus === "not_found" ||
     sacemStatus === "blocked" ||
@@ -288,13 +550,6 @@ function getQualityStatus(row) {
     return {
       code: "missing",
       label: "Non trouvé",
-    };
-  }
-
-  if (sacemStatus === "found") {
-    return {
-      code: "review",
-      label: "À vérifier",
     };
   }
 
@@ -541,6 +796,40 @@ function updateSelected(field, value) {
   if (selectedIndex === null) return;
   updateRow(selectedIndex, field, value);
 }
+
+function updateTitleForAllSame(
+  newTitle
+) {
+  if (selectedIndex === null) {
+    return;
+  }
+
+  const oldTitle = String(
+    rows[selectedIndex]?.title || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  setRows((prev) =>
+    prev.map((row) => {
+      const rowTitle = String(
+        row.title || ""
+      )
+        .trim()
+        .toLowerCase();
+
+      if (rowTitle !== oldTitle) {
+        return row;
+      }
+
+      return {
+        ...row,
+        title: newTitle,
+      };
+    })
+  );
+}
+
 function resetWorkspace(nextMode) {
   setPage("workspace");
   setMode(nextMode);
@@ -634,24 +923,51 @@ const videoName =
     "rows_json",
     JSON.stringify(rows)
   );
+  const validatedCount = rows.filter((row) => {
+  return (
+    row.statut_validation === "validated" ||
+    row.statut_sacem === "found"
+  );
+}).length;
+
+  const reviewCount = rows.filter((row) => {
+    return (
+      row.statut_validation === "review" &&
+      row.statut_sacem !== "found"
+    );
+  }).length;
+
+  const missingCount = rows.filter((row) => {
+    return (
+      row.statut_sacem === "not_found" ||
+      row.statut_sacem === "blocked" ||
+      String(
+        row.statut_sacem || ""
+      ).startsWith("error")
+    );
+  }).length;
+
+  const segmentCount = rows.length;
+
+  const qualityScore =
+    segmentCount > 0
+      ? Math.round(
+          (validatedCount / segmentCount) * 100
+        )
+      : 0;
 
   formData.append(
-    "metadata_json",
-    JSON.stringify({
-      conductorType,
-      classicIntro,
-      cleanAudio,
-      videoDuration,
-      segmentCount: rows.length,
-      validatedCount:
-        qualitySummary.validated,
-      reviewCount:
-        qualitySummary.review,
-      missingCount:
-        qualitySummary.missing,
-      qualityScore:
-        qualitySummary.score,
-    })
+  "metadata_json",
+  JSON.stringify({
+    videoDuration,
+    segmentCount,
+    validatedCount,
+    reviewCount,
+    missingCount,
+    qualityScore,
+    conductorType,
+  })
+
   );
 
   const url = currentProjectId
@@ -782,6 +1098,9 @@ async function analyzeClassic() {
       mappingFile
     );
   }
+  if (edlFile) {
+  formData.append("edl", edlFile);
+}
 
   setLoading(true);
   setProgress(0);
@@ -1348,10 +1667,15 @@ async function saveProjectExcel() {
 }
    
  
+function deleteRow(index) {
+  setRows((prev) =>
+    prev.filter(
+      (_, i) => i !== index
+    )
+  );
 
-  function deleteRow(index) {
-    setRows(rows.filter((_, i) => i !== index));
-  }
+  setSelectedIndex(null);
+}
 async function enrichSacem() {
   if (!rows.length) {
     alert("Aucun titre à enrichir.");
@@ -1359,36 +1683,48 @@ async function enrichSacem() {
   }
 
   const formData = new FormData();
-  formData.append("rows_json", JSON.stringify(rows));
 
-  const mappingFile =
-    classicMappingRef.current?.files?.[0];
+  formData.append(
+    "rows_json",
+    JSON.stringify(rows)
+  );
 
-  if (mappingFile) {
-    formData.append("mapping", mappingFile);
-  }
-
-  setLoading(true);
+  setSacemProgress(0);
+  setSacemCurrent(0);
+  setSacemTotal(rows.length);
+  setSacemMessage(
+    "Préparation SACEM..."
+  );
+  setSacemError("");
+  setSacemJobStatus("pending");
 
   try {
     const res = await axios.post(
-      `${API}/enrich-sacem`,
+      `${API}/enrich-sacem/start`,
       formData,
       {
         headers: {
-          "Content-Type": "multipart/form-data",
+          "Content-Type":
+            "multipart/form-data",
         },
       }
     );
 
-    setRows(res.data.rows || []);
+    setSacemJobId(
+      res.data.job_id
+    );
   } catch (err) {
     console.error(err);
+
+    setSacemJobStatus("error");
+    setSacemError(
+      "Impossible de démarrer SACEM."
+    );
+
     alert("Erreur SACEM.");
-  } finally {
-    setLoading(false);
   }
-} // ferme enrichSacem
+}
+
 function buildSacemSearchUrl(row) {
   const title = String(row?.title || "").trim();
   const artist = String(row?.artist || "").trim();
@@ -1403,6 +1739,74 @@ function buildSacemSearchUrl(row) {
     "&query=" +
     encodeURIComponent(query) +
     "#searchBtn"
+  );
+}
+
+async function saveValidatedRights(row) {
+  try {
+    const response = await fetch(
+      "http://127.0.0.1:8000/rights-memory",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          row,
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      console.error(
+        "Erreur sauvegarde mémoire droits"
+      );
+    }
+  } catch (error) {
+    console.error(
+      "Erreur mémoire droits:",
+      error
+    );
+  }
+}
+
+function updateRightsForAllSameTitle(
+  field,
+  value
+) {
+  if (selectedIndex === null) {
+    return;
+  }
+
+  const selectedRow = rows[selectedIndex];
+
+  if (!selectedRow) {
+    return;
+  }
+
+  const referenceTitle = String(
+    selectedRow.title || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  setRows((prev) =>
+    prev.map((row) => {
+      const rowTitle = String(
+        row.title || ""
+      )
+        .trim()
+        .toLowerCase();
+
+      if (rowTitle !== referenceTitle) {
+        return row;
+      }
+
+      return {
+        ...row,
+        [field]: value,
+      };
+    })
   );
 }
 
@@ -1473,14 +1877,21 @@ return (
     <div className="sidebar-section">
       <span className="sidebar-label">Analyse</span>
 
-      <label className="field-label">Vidéo</label>
+      <label className="field-label">Vidéo</label>  
       <input
         ref={classicVideoRef}
         type="file"
-        accept="video/*"
+        accept=".mp4,.mov,.avi,.mkv,.m4v,.wav,video/*,audio/wav"
         onChange={onVideoFile}
       />
-
+      <label>EDL</label>
+      <input
+        type="file"
+        accept=".edl,.txt"
+        onChange={(e) =>
+          setEdlFile(e.target.files?.[0] || null)
+        }
+/>
       <label className="field-label">
         Excel correspondance
       </label>
@@ -1510,14 +1921,84 @@ return (
       >
         Analyser ACRCloud
       </button>
+      {["pending", "running"].includes(jobStatus) && (
+      <div className="analysis-progress">
+        <div className="progress-header">
+          <span>Analyse ACRCloud</span>
+          <span>{Math.round(progress)}%</span>
+        </div>
+
+        <div className="progress-track">
+          <div
+            className="progress-fill"
+            style={{
+              width: `${progress}%`,
+            }}
+          />
+        </div>
+
+        <div className="progress-detail">
+          {progressMessage}
+          {totalChunks > 0 && (
+            <>
+              {" — "}
+              {currentChunk} / {totalChunks} chunks
+            </>
+          )}
+        </div>
+      </div>
+    )}
 
       <button
-        className="secondary-btn"
-        onClick={enrichSacem}
-        disabled={!rows.length}
-      >
-        Remplir SACEM
-      </button>
+  className="secondary-btn"
+  onClick={enrichSacem}
+  disabled={
+    !rows.length ||
+    ["pending", "running"].includes(
+      sacemJobStatus
+    )
+  }
+>
+  {["pending", "running"].includes(
+    sacemJobStatus
+  )
+    ? "SACEM en cours..."
+    : "Remplir SACEM"}
+</button>
+
+{["pending", "running", "done"].includes(
+  sacemJobStatus
+) && (
+  <div className="analysis-progress">
+    <div className="progress-header">
+      <span>Enrichissement SACEM</span>
+
+      <span>
+        {Math.round(sacemProgress)}%
+      </span>
+    </div>
+
+    <div className="progress-track">
+      <div
+        className="progress-fill"
+        style={{
+          width: `${sacemProgress}%`,
+        }}
+      />
+    </div>
+
+    <div className="progress-detail">
+      {sacemMessage}
+
+      {sacemTotal > 0 && (
+        <>
+          {" — "}
+          {sacemCurrent} / {sacemTotal} titres
+        </>
+      )}
+    </div>
+  </div>
+)}
 
       <button
         className="secondary-btn"
@@ -1641,6 +2122,27 @@ return (
       <div>
         <h3>Timeline</h3>
         <span>{rows.length} segment(s)</span>
+        <div className="timeline-legend">
+        <div className="legend-item">
+          <span className="legend-dot validated"></span>
+          <span>Validé</span>
+        </div>
+
+        <div className="legend-item">
+          <span className="legend-dot partial"></span>
+          <span>Incomplet</span>
+        </div>
+
+        <div className="legend-item">
+          <span className="legend-dot review"></span>
+          <span>À vérifier</span>
+        </div>
+
+        <div className="legend-item">
+          <span className="legend-dot pending"></span>
+          <span>En attente</span>
+        </div>
+      </div>
       </div>
 
       <div className="timeline-zoom">
@@ -1743,11 +2245,9 @@ return (
             return (
               <div
                 key={`${row.index ?? index}-${start}-${end}`}
-                className={`pro-segment ${colorClassForTitle(
-  row.title
-)} pro-segment-${quality.code} ${
-  selectedIndex === index ? "selected" : ""
-}`}
+                className={`pro-segment ${getRightsStatus(row)} ${
+                selectedIndex === index ? "selected" : ""
+              }`}
                 style={{
                   left: `${start * pixelsPerSecond}px`,
                   width: `${Math.max(
@@ -1778,6 +2278,10 @@ return (
                   <small>
                     {row.time_in} → {row.time_out}
                   </small>
+
+                  <small>
+                    {row.source || "source inconnue"}
+                  </small>
                 </div>
 
                 <span
@@ -1803,9 +2307,13 @@ return (
 
     <label>Titre</label>
     <input
-      value={rows[selectedIndex].title}
-      onChange={(e) => updateSelected("title", e.target.value)}
-    />
+  value={rows[selectedIndex].title}
+  onChange={(e) =>
+    updateTitleForAllSame(
+      e.target.value
+    )
+  }
+/>
 
     <label>TIME IN</label>
     <input
@@ -1818,18 +2326,91 @@ return (
       value={rows[selectedIndex].time_out}
       onChange={(e) => updateSelected("time_out", e.target.value)}
     />
+    <label>Auteur</label>
+<input
+  value={
+    rows[selectedIndex]?.auteur || ""
+  }
+  onChange={(e) =>
+    updateRightsForAllSameTitle(
+      "auteur",
+      e.target.value
+    )
+  }
+/>
     <label>Compositeur</label>
 <input
-  value={rows[selectedIndex].compositeur || ""}
-  onChange={(e) => updateSelected("compositeur", e.target.value)}
+  value={
+    rows[selectedIndex]?.compositeur || ""
+  }
+  onChange={(e) =>
+    updateRightsForAllSameTitle(
+      "compositeur",
+      e.target.value
+    )
+  }
+/>
+<label>Interprète</label>
+<input
+  value={
+    rows[selectedIndex]?.interprete || ""
+  }
+  onChange={(e) =>
+    updateRightsForAllSameTitle(
+      "interprete",
+      e.target.value
+    )
+  }
 />
 
+<label>Producteur / Label</label>
+<input
+  value={
+    rows[selectedIndex]?.label || ""
+  }
+  onChange={(e) =>
+    updateRightsForAllSameTitle(
+      "label",
+      e.target.value
+    )
+  }
+/>
 <label>Éditeur</label>
 <input
-  value={rows[selectedIndex].editeur || ""}
-  onChange={(e) => updateSelected("editeur", e.target.value)}
+  value={
+    rows[selectedIndex]?.editeur || ""
+  }
+  onChange={(e) =>
+    updateRightsForAllSameTitle(
+      "editeur",
+      e.target.value
+    )
+  }
 />
-
+<label>Sous-éditeur</label>
+<input
+  value={
+    rows[selectedIndex]?.sous_editeur|| ""
+  }
+  onChange={(e) =>
+    updateRightsForAllSameTitle(
+      "sous-editeur",
+      e.target.value
+    )
+  }
+/>
+<label>Distributeur</label>
+<input
+  value={
+    rows[selectedIndex]?.distributeur || ""
+  }
+  onChange={(e) =>
+    updateRightsForAllSameTitle(
+      "distributeur",
+      e.target.value
+    )
+  }
+/>
 <label>ISWC</label>
 <input
   value={rows[selectedIndex].code_iswc || ""}
@@ -1844,20 +2425,31 @@ return (
 <div className="validation-actions">
   <button
     className="validate-button"
-    onClick={() => {
-      if (selectedIndex === null) return;
+    onClick={async () => {
+  if (selectedIndex === null) {
+    return;
+  }
+
+      const currentRow =
+        rows[selectedIndex];
+
+      const validatedRow = {
+        ...currentRow,
+        statut_validation: "validated",
+      };
 
       setRows((prev) =>
         prev.map((row, index) =>
           index === selectedIndex
-            ? {
-                ...row,
-                statut_validation: "validated",
-              }
+            ? validatedRow
             : row
         )
       );
-    }}
+
+      await saveValidatedRights(
+        validatedRow
+      );
+}}
   >
     ✓ Valider
   </button>
@@ -1879,7 +2471,7 @@ return (
       );
     }}
   >
-   
+   à verifier
   </button>
 </div>
 
@@ -1895,31 +2487,10 @@ return (
     🔎 Ouvrir la fiche SACEM
   </a>
 )}
-
-{!selectedRow?.url_sacem &&
-  selectedRow?.url_sacem_candidate && (
-    <a
-      href={selectedRow.url_sacem_candidate}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="sacem-link candidate"
-    >
-      ⚠️ Voir la fiche SACEM candidate
-    </a>
-  )}
  
-
-  {!selectedRow?.url_sacem &&
-    selectedRow?.url_sacem_candidate && (
-      <a
-        href={selectedRow.url_sacem_candidate}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="sacem-link candidate"
-      >
-        ⚠️ Voir le candidat SACEM
-      </a>
-    )}
+ 
+x
+ 
 
   {/* Absolument aucun résultat */}
   {!selectedRow?.url_sacem &&

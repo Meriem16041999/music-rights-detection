@@ -1,28 +1,58 @@
+# =========================
 # Secrets
+# =========================
 .env
 .env.*
 !.env.example
 
+
+# =========================
 # Python
+# =========================
 .venv/
 venv/
 __pycache__/
 *.pyc
+*.pyo
 
-# Node
+
+# =========================
+# PyInstaller
+# =========================
+build/
+dist/
+
+# IMPORTANT :
+# ne PAS ignorer *.spec
+# music-rights-backend.spec doit être versionné
+
+
+# =========================
+# Node / React / Electron
+# =========================
 frontend/node_modules/
 frontend/dist/
+frontend/release/
 
+
+# =========================
 # Bases locales
+# =========================
 *.sqlite3
 *.db
 
-# Cache / jobs
+
+# =========================
+# Cache / fichiers temporaires
+# =========================
 cache/
 tmp/
 temp/
 
+
+# =========================
 # Vidéos / audio
+# =========================
 *.mp4
 *.mov
 *.mkv
@@ -31,13 +61,14 @@ temp/
 *.mp3
 *.m4a
 
+
+# =========================
 # macOS
+# =========================
 .DS_Store
 
-# Logs
-*.log.env
 
-build/
-dist/
-frontend/dist/
-*.spec
+# =========================
+# Logs
+# =========================
+*.log
