@@ -1,4 +1,4 @@
-name: Build Music Rights Windows
+name: Build Windows
 
 on:
   workflow_dispatch:
@@ -8,146 +8,103 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Recuperer le projet
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Installer Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
-      - name: Installer Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Installer les dependances Python
-        shell: powershell
+      - name: Upgrade pip
         run: |
           python -m pip install --upgrade pip
+
+      - name: Install Python dependencies
+        run: |
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Installer et preparer FFmpeg
+      - name: Create tools directory
         shell: powershell
         run: |
-          choco install ffmpeg -y
+          New-Item -ItemType Directory -Force tools
 
-          New-Item -ItemType Directory -Force -Path "windows-tools"
+      - name: Download FFmpeg
+        shell: powershell
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" `
+            -OutFile "ffmpeg.zip"
 
-          $ffmpegReal = Get-ChildItem `
-            "C:\ProgramData\chocolatey\lib\ffmpeg" `
+          Expand-Archive `
+            -Path "ffmpeg.zip" `
+            -DestinationPath "ffmpeg-temp"
+
+          $ffmpeg = Get-ChildItem `
+            -Path "ffmpeg-temp" `
             -Recurse `
             -Filter "ffmpeg.exe" |
-            Where-Object {
-              $_.FullName -like "*\bin\ffmpeg.exe"
-            } |
             Select-Object -First 1
 
-          $ffprobeReal = Get-ChildItem `
-            "C:\ProgramData\chocolatey\lib\ffmpeg" `
+          $ffprobe = Get-ChildItem `
+            -Path "ffmpeg-temp" `
             -Recurse `
             -Filter "ffprobe.exe" |
-            Where-Object {
-              $_.FullName -like "*\bin\ffprobe.exe"
-            } |
             Select-Object -First 1
 
-          if (-not $ffmpegReal) {
-            throw "Vrai ffmpeg.exe introuvable"
-          }
-
-          if (-not $ffprobeReal) {
-            throw "Vrai ffprobe.exe introuvable"
-          }
-
-          Write-Host "FFMPEG REEL = $($ffmpegReal.FullName)"
-          Write-Host "FFPROBE REEL = $($ffprobeReal.FullName)"
+          Copy-Item `
+            $ffmpeg.FullName `
+            "tools/ffmpeg.exe"
 
           Copy-Item `
-            $ffmpegReal.FullName `
-            "windows-tools\ffmpeg.exe"
+            $ffprobe.FullName `
+            "tools/ffprobe.exe"
 
-          Copy-Item `
-            $ffprobeReal.FullName `
-            "windows-tools\ffprobe.exe"
-
-          Write-Host "=== TEST FFMPEG ==="
-          & "windows-tools\ffmpeg.exe" -version
-
-          Write-Host "=== TEST FFPROBE ==="
-          & "windows-tools\ffprobe.exe" -version
-
-          Write-Host "=== CONTENU WINDOWS-TOOLS ==="
-          Get-ChildItem "windows-tools"
-
-      - name: Construire le backend Windows
+      - name: Verify tools
         shell: powershell
         run: |
-          python -c "import fastapi; print('FASTAPI AVANT PYINSTALLER:', fastapi.__file__)"
+          Get-ChildItem tools
 
-          python -m PyInstaller `
-            --clean `
-            --noconfirm `
-            --onedir `
-            --name music-rights-backend `
-            --add-binary "windows-tools\ffmpeg.exe;tools" `
-            --add-binary "windows-tools\ffprobe.exe;tools" `
-            --collect-all fastapi `
-            --collect-all starlette `
-            --collect-all pydantic `
-            --collect-all pydantic_core `
-            --collect-all librosa `
-            --collect-all soundfile `
-            --collect-all numba `
-            --collect-all demucs `
-            --hidden-import fastapi `
-            --hidden-import fastapi.applications `
-            --hidden-import fastapi.routing `
-            --hidden-import fastapi.middleware `
-            --hidden-import fastapi.middleware.cors `
-            --hidden-import uvicorn `
-            backend_api.py
+      - name: Build Python backend
+        run: |
+          pyinstaller music-rights-backend.spec
 
-          Write-Host "=== VERIFICATION FFMPEG ==="
-
-          if (-not (Test-Path "dist\music-rights-backend\_internal\tools\ffmpeg.exe")) {
-            throw "ffmpeg.exe absent du build"
-          }
-
-          if (-not (Test-Path "dist\music-rights-backend\_internal\tools\ffprobe.exe")) {
-            throw "ffprobe.exe absent du build"
-          }
-
-          Write-Host "FFmpeg et FFprobe sont bien embarques."
-
-          Write-Host "=== VERIFICATION FASTAPI ==="
-
+      - name: Verify backend
+        shell: powershell
+        run: |
           Get-ChildItem `
-            "dist\music-rights-backend" `
             -Recurse `
-            -Filter "fastapi*" |
-            Select-Object FullName
+            dist/music-rights-backend
 
-          if (-not (
-            Test-Path "dist\music-rights-backend\_internal\fastapi"
-          )) {
-            throw "FastAPI absent du build PyInstaller"
-          }
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
 
-          Write-Host "FastAPI est bien embarque."
-
-      - name: Installer les dependances frontend
+      - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
 
-      - name: Construire l'installateur Windows
+      - name: Build Windows desktop app
         working-directory: frontend
         run: npm run desktop:build:win
 
-      - name: Sauvegarder l'installateur
+      - name: Find generated EXE
+        shell: powershell
+        run: |
+          Get-ChildItem `
+            -Path frontend `
+            -Recurse `
+            -Filter "*.exe"
+
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: Music-Rights-Windows
-          path: frontend/dist/*.exe
-          if-no-files-found: error
+          path: |
+            frontend/dist/*.exe
+            frontend/release/*.exe
+          if-no-files-found: warn
